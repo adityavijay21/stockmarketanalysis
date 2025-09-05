@@ -1,0 +1,15 @@
+How to Run This Project
+Save the file
+Download or copy time.py to any folder on your laptop.
+
+Open terminal / command prompt in that folder
+
+Install required libraries
+
+pip install streamlit yfinance pandas numpy matplotlib scikit-learn statsmodels prophet keras tensorflow
+Run the Streamlit app
+
+streamlit run time.py
+Open in browser
+Go to the link shown in the terminal (usually http://localhost:8501).
+
