@@ -2,355 +2,239 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import yfinance as yf
-import requests
 import talib as ta
-import json
+import json, time, pytz
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Tuple, Dict
-import time
-import pytz
 
-# --- Timezone Configuration ---
-ist = pytz.timezone('Asia/Kolkata')
-
-# --- Page Configuration ---
+# -------------------------------------------------------
+# Timezone & Page Config
+# -------------------------------------------------------
+ist = pytz.timezone("Asia/Kolkata")
 st.set_page_config(
     page_title="📈 NSE 10-Filter Stock Screener",
+    page_icon="📊",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
 )
 
-# --- Global Custom CSS ---
+# -------------------------------------------------------
+# Global Styles
+# -------------------------------------------------------
 st.markdown("""
 <style>
-/* === Layout === */
-section[data-testid="stSidebar"] {
-    background-color: #f8f9fa;
+section[data-testid="stSidebar"]{background-color:#f8f9fa;}
+.main-header{
+    background:linear-gradient(90deg,#001f3f 0%,#0074D9 100%);
+    padding:1.2rem;border-radius:12px;margin-bottom:1.2rem;
+    text-align:center;color:white;box-shadow:0 4px 14px rgba(0,0,0,.15);
 }
-.main-header {
-    background: linear-gradient(90deg, #001f3f 0%, #0074D9 100%);
-    padding: 1.5rem;
-    border-radius: 12px;
-    margin-bottom: 1.5rem;
-    text-align: center;
-    color: white;
-    box-shadow: 0 4px 14px rgba(0,0,0,0.15);
+.stButton>button{
+    width:100%;border-radius:10px;font-weight:600;
+    border:2px solid #0074D9;background:#0074D9;color:white;
+    transition:all .2s;
 }
-/* === Buttons === */
-.stButton>button {
-    width: 100%;
-    border-radius: 10px;
-    font-weight: 600;
-    border: 2px solid #0074D9;
-    background-color: #0074D9;
-    color: white;
-    transition: all 0.2s ease-in-out;
+.stButton>button:hover{background:white;color:#0074D9;}
+.metric-card{
+    background:white;border-radius:14px;padding:1rem;
+    box-shadow:0 4px 10px rgba(0,0,0,.08);text-align:center;
 }
-.stButton>button:hover {
-    background-color: white;
-    color: #0074D9;
-    border-color: #0074D9;
-}
-/* === Results Table === */
-.dataframe td {
-    padding: 0.6rem !important;
-}
-.results-header {
-    font-size: 1.8rem;
-    font-weight: bold;
-    color: #001f3f;
-    margin-top: 2rem;
-    border-bottom: 2px solid #0074D9;
-    padding-bottom: 0.4rem;
+.metric-card h3{margin:0;color:#001f3f;font-size:1.1rem;}
+.metric-card p{margin:0;font-size:1.6rem;font-weight:700;color:#0074D9;}
+.results-header{
+    font-size:1.6rem;font-weight:bold;color:#001f3f;
+    margin-top:1.5rem;border-bottom:2px solid #0074D9;padding-bottom:.4rem;
 }
 </style>
 """, unsafe_allow_html=True)
 
-# --- Header ---
+# -------------------------------------------------------
+# Header
+# -------------------------------------------------------
 st.markdown('<div class="main-header"><h1>🇮🇳 NSE 10-Filter Stock Screener</h1></div>', unsafe_allow_html=True)
 
-# --- Data Loading & Caching ---
+# -------------------------------------------------------
+# Data Utilities
+# -------------------------------------------------------
 @st.cache_data(ttl=43200)
 def load_nse_stocks() -> Tuple[Dict, str]:
     try:
         url = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
         df = pd.read_csv(url)
-        df.dropna(subset=['SYMBOL', 'NAME OF COMPANY'], inplace=True)
-        df = df[df['SERIES'] == 'EQ']
-        stock_dict = dict(zip(df['SYMBOL'], df['NAME OF COMPANY']))
-        return stock_dict, f"Successfully loaded {len(stock_dict)} stocks from NSE."
+        df = df[df["SERIES"]=="EQ"].dropna(subset=["SYMBOL","NAME OF COMPANY"])
+        return dict(zip(df["SYMBOL"], df["NAME OF COMPANY"])), f"Loaded {len(df)} NSE stocks."
     except Exception:
-        pass
-    try:
-        json_path = Path("indian_stocks.json")
-        if json_path.exists():
-            with open(json_path, "r") as f:
-                stock_list = json.load(f)
-                stock_dict = {item['symbol'].replace('.NS', ''): item['name'] for item in stock_list}
-                return stock_dict, f"Loaded {len(stock_dict)} stocks from local file."
-        else:
-            raise FileNotFoundError
-    except Exception:
-        fallback_stocks = {
-            "RELIANCE": "Reliance Industries Ltd.", "TCS": "Tata Consultancy Services"
-        }
-        return fallback_stocks, "Using a small fallback list."
+        p = Path("indian_stocks.json")
+        if p.exists():
+            with open(p) as f:
+                data = json.load(f)
+            return {i["symbol"].replace(".NS",""): i["name"] for i in data}, "Loaded stocks from local file."
+        return {"RELIANCE":"Reliance Industries","TCS":"Tata Consultancy Services"}, "Fallback stock list."
 
 @st.cache_data(ttl=1800)
 def download_all_data(tickers):
+    start = datetime.now(ist) - pd.DateOffset(years=2)
+    return yf.download(tickers, start=start.strftime("%Y-%m-%d"),
+                       group_by="ticker", auto_adjust=True,
+                       threads=False, ignore_tz=True)
+
+@st.cache_data(ttl=300)
+def download_current_data(tickers):
     today = datetime.now(ist)
-    start_date = today - pd.DateOffset(years=2)
-    data = yf.download(
+    return yf.download(
         tickers,
-        start=start_date.strftime('%Y-%m-%d'),
-        group_by='ticker',
+        start=today.strftime("%Y-%m-%d"),
+        end=(today+timedelta(days=1)).strftime("%Y-%m-%d"),
+        group_by="ticker",
         auto_adjust=True,
         threads=False,
         ignore_tz=True
     )
-    return data
 
-@st.cache_data(ttl=300)
-def download_current_data(tickers):
-    try:
-        today = datetime.now(ist)
-        start_str = today.strftime('%Y-%m-%d')
-        end_str = (today + timedelta(days=1)).strftime('%Y-%m-%d')
-        data = yf.download(
-            tickers,
-            start=start_str,
-            end=end_str,
-            group_by='ticker',
-            auto_adjust=True,
-            threads=False,
-            ignore_tz=True
-        )
-        return data
-    except Exception as e:
-        st.error(f"Error downloading current data: {e}")
-        return pd.DataFrame()
-
-# --- Core Filtering Logic ---
-def passes_filters(df, filters,
-                   rsi_daily_above_threshold=50.0,
-                   rsi_daily_crossed_threshold=50.0,
-                   rsi_weekly_above_threshold=45.0,
-                   rsi_weekly_crossed_threshold=59.0):
+def passes_filters(df, filters, rsi_d=50, rsi_d_cross=50, rsi_w=45, rsi_w_cross=59):
     try:
         if df is None or df.empty or len(df) < 30: return False
-        df = df.copy()
-        df.index = pd.to_datetime(df.index)
-        latest = df.iloc[-1]
-
-        if filters.get("Close > Open", False) and latest['Close'] <= latest['Open']: return False
-        if filters.get("Volume > 500k", False) and latest['Volume'] < 500000: return False
-
+        df = df.copy(); latest = df.iloc[-1]
+        if filters.get("Close > Open") and latest["Close"] <= latest["Open"]: return False
+        if filters.get("Volume > 500k") and latest["Volume"] < 500000: return False
         if len(df) >= 5:
-            df['Range'] = df['High'] - df['Low']
-            for i in range(1, 5):
-                if filters.get(f"Range > {i}d ago", False):
-                    if df['Range'].iloc[-1] <= df['Range'].iloc[-(i + 1)]: return False
-
-        if filters.get("Close > Weekly Open", False):
-            weekly_open = df['Open'].resample('W-MON').first().iloc[-1]
-            if pd.isna(weekly_open) or latest['Close'] <= weekly_open: return False
-
-        if filters.get("Close > Monthly Open", False):
-            monthly_open = df['Open'].resample('MS').first().iloc[-1]
-            if pd.isna(monthly_open) or latest['Close'] <= monthly_open: return False
-
-        if filters.get("Daily RSI >", False) or filters.get("Daily RSI crossed", False):
-            d_rsi_series = ta.RSI(df['Close'], timeperiod=14)
-            if d_rsi_series.dropna().shape[0] < 1: return False
-            latest_d_rsi = d_rsi_series.iloc[-1]
-            if pd.isna(latest_d_rsi): return False
-            if filters.get("Daily RSI >", False) and latest_d_rsi <= rsi_daily_above_threshold: return False
-            if filters.get("Daily RSI crossed", False):
-                if d_rsi_series.dropna().shape[0] < 2: return False
-                prev_d_rsi = d_rsi_series.iloc[-2]
-                if pd.isna(prev_d_rsi): return False
-                if not (prev_d_rsi < rsi_daily_crossed_threshold and latest_d_rsi > rsi_daily_crossed_threshold): return False
-
-        weekly_data = df.resample('W-MON').agg({'Close': 'last'}).dropna()
-        if filters.get("Weekly RSI >", False) or filters.get("Weekly RSI crossed", False):
-            if len(weekly_data) < 15: return False
-            w_rsi_series = ta.RSI(weekly_data['Close'], timeperiod=14)
-            if w_rsi_series.dropna().shape[0] < 1: return False
-            latest_w_rsi = w_rsi_series.iloc[-1]
-            if pd.isna(latest_w_rsi): return False
-            if filters.get("Weekly RSI >", False) and latest_w_rsi <= rsi_weekly_above_threshold: return False
-            if filters.get("Weekly RSI crossed", False):
-                if w_rsi_series.dropna().shape[0] < 2: return False
-                prev_w_rsi = w_rsi_series.iloc[-2]
-                if pd.isna(prev_w_rsi): return False
-                if not (prev_w_rsi < rsi_weekly_crossed_threshold and latest_w_rsi > rsi_weekly_crossed_threshold): return False
-
+            df["Range"] = df["High"] - df["Low"]
+            for i in range(1,5):
+                if filters.get(f"Range > {i}d") and df["Range"].iloc[-1] <= df["Range"].iloc[-(i+1)]: return False
+        if filters.get("Close > Weekly Open"):
+            w_open = df["Open"].resample("W-MON").first().iloc[-1]
+            if pd.isna(w_open) or latest["Close"] <= w_open: return False
+        if filters.get("Close > Monthly Open"):
+            m_open = df["Open"].resample("MS").first().iloc[-1]
+            if pd.isna(m_open) or latest["Close"] <= m_open: return False
+        # Daily RSI
+        if filters.get("Daily RSI >") or filters.get("Daily RSI crossed"):
+            r = ta.RSI(df["Close"],14).dropna()
+            if r.empty: return False
+            if filters.get("Daily RSI >") and r.iloc[-1] <= rsi_d: return False
+            if filters.get("Daily RSI crossed") and (len(r)<2 or not (r.iloc[-2]<rsi_d_cross<r.iloc[-1])): return False
+        # Weekly RSI
+        w = df.resample("W-MON").agg({"Close":"last"}).dropna()
+        if filters.get("Weekly RSI >") or filters.get("Weekly RSI crossed"):
+            r = ta.RSI(w["Close"],14).dropna()
+            if r.empty: return False
+            if filters.get("Weekly RSI >") and r.iloc[-1] <= rsi_w: return False
+            if filters.get("Weekly RSI crossed") and (len(r)<2 or not (r.iloc[-2]<rsi_w_cross<r.iloc[-1])): return False
         return True
-    except (IndexError, KeyError, Exception):
+    except Exception:
         return False
 
-# ------------------- Sidebar UI ------------------- #
+# -------------------------------------------------------
+# Sidebar Filters
+# -------------------------------------------------------
 st.sidebar.header("📊 Filter Conditions")
-st.sidebar.write("Select criteria to find stocks that meet **all** conditions.")
+filters = {}
+with st.sidebar.expander("📈 Daily / Range", expanded=True):
+    filters["Close > Open"] = st.checkbox("Close > Open", True)
+    for i in range(1,5):
+        filters[f"Range > {i}d"] = st.checkbox(f"Range > {i} Day(s) Ago", True)
 
-active_filters = {}
-with st.sidebar.expander("📈 Daily Price / Range", expanded=True):
-    active_filters["Close > Open"] = st.checkbox("Daily Close > Daily Open", True)
-    for i in range(1, 5):
-        active_filters[f"Range > {i}d ago"] = st.checkbox(f"Range > {i} Day(s) Ago", True)
-
-with st.sidebar.expander("🗓️ Periodic Crossovers", expanded=True):
-    active_filters["Close > Weekly Open"] = st.checkbox("Close > Weekly Open", True)
-    active_filters["Close > Monthly Open"] = st.checkbox("Close > Monthly Open", True)
+with st.sidebar.expander("🗓️ Crossovers", expanded=True):
+    filters["Close > Weekly Open"] = st.checkbox("Close > Weekly Open", True)
+    filters["Close > Monthly Open"] = st.checkbox("Close > Monthly Open", True)
 
 with st.sidebar.expander("💹 Volume & RSI", expanded=True):
-    active_filters["Volume > 500k"] = st.checkbox("Volume > 500,000", True)
+    filters["Volume > 500k"] = st.checkbox("Volume > 500,000", True)
     col1, col2 = st.columns(2)
-    with col1:
-        active_filters["Daily RSI >"] = st.checkbox("Daily RSI >", True)
-    with col2:
-        rsi_daily_above_threshold = st.number_input("Daily RSI Threshold", 0.0, 100.0, 50.0, 0.1, label_visibility="collapsed")
+    with col1: filters["Daily RSI >"] = st.checkbox("Daily RSI >", True)
+    with col2: rsi_d = st.number_input("Daily RSI Threshold",0.0,100.0,50.0,0.1,label_visibility="collapsed")
     col1, col2 = st.columns(2)
-    with col1:
-        active_filters["Daily RSI crossed"] = st.checkbox("Daily RSI Crossed", True)
-    with col2:
-        rsi_daily_crossed_threshold = st.number_input("Crossed Threshold", 0.0, 100.0, 50.0, 0.1, label_visibility="collapsed")
+    with col1: filters["Daily RSI crossed"] = st.checkbox("Daily RSI Crossed", True)
+    with col2: rsi_d_cross = st.number_input("Crossed Threshold",0.0,100.0,50.0,0.1,label_visibility="collapsed")
     col1, col2 = st.columns(2)
-    with col1:
-        active_filters["Weekly RSI >"] = st.checkbox("Weekly RSI >", True)
-    with col2:
-        rsi_weekly_above_threshold = st.number_input("Weekly RSI Threshold", 0.0, 100.0, 45.0, 0.1, label_visibility="collapsed")
+    with col1: filters["Weekly RSI >"] = st.checkbox("Weekly RSI >", True)
+    with col2: rsi_w = st.number_input("Weekly RSI Threshold",0.0,100.0,45.0,0.1,label_visibility="collapsed")
     col1, col2 = st.columns(2)
-    with col1:
-        active_filters["Weekly RSI crossed"] = st.checkbox("Weekly RSI Crossed", True)
-    with col2:
-        rsi_weekly_crossed_threshold = st.number_input("Weekly Crossed Threshold", 0.0, 100.0, 59.0, 0.1, label_visibility="collapsed")
+    with col1: filters["Weekly RSI crossed"] = st.checkbox("Weekly RSI Crossed", True)
+    with col2: rsi_w_cross = st.number_input("Weekly Crossed Threshold",0.0,100.0,59.0,0.1,label_visibility="collapsed")
 
-st.sidebar.markdown("---")
+# -------------------------------------------------------
+# Dashboard KPIs
+# -------------------------------------------------------
+stocks, msg = load_nse_stocks()
+st.toast(msg, icon="✅")
+col1, col2, col3 = st.columns(3)
+with col1: st.markdown(f'<div class="metric-card"><h3>Total Stocks</h3><p>{len(stocks)}</p></div>', unsafe_allow_html=True)
+with col2: st.markdown(f'<div class="metric-card"><h3>Filters Applied</h3><p>{sum(filters.values())}</p></div>', unsafe_allow_html=True)
+with col3: st.markdown(f'<div class="metric-card"><h3>Ready</h3><p>✔</p></div>', unsafe_allow_html=True)
 
-# --- Main Logic ---
-all_stocks, status_message = load_nse_stocks()
-st.toast(status_message, icon="✅")
+st.markdown("---")
 
-total_stocks_count = len(all_stocks)
-st.info(f"Ready to scan **{total_stocks_count}** stocks based on your selected filters.")
+# -------------------------------------------------------
+# Scan Logic
+# -------------------------------------------------------
+if st.button("🚀 Run Scan on All NSE Stocks", use_container_width=True):
+    start = datetime.now(ist)
+    tickers = [f"{s}.NS" for s in stocks.keys()]
+    with st.spinner("Downloading historical data…"):
+        hist = download_all_data(tickers)
+    with st.spinner("Fetching current market data…"):
+        curr = download_current_data(tickers)
 
-if st.button("🚀 Run Scan on All NSE Stocks"):
-    start_time = datetime.now(ist)
+    results, status = [], st.empty()
+    progress = st.progress(0)
 
-    with st.spinner(f"Downloading historical data for {total_stocks_count} stocks..."):
-        tickers = [f"{symbol}.NS" for symbol in all_stocks.keys()]
-        data = download_all_data(tickers)
-
-    with st.spinner("Downloading current market data..."):
-        current_data = download_current_data(tickers)
-        retries = 3
-        while current_data.empty and retries > 0:
-            st.warning("Rate limit hit. Retrying after delay...")
-            time.sleep(60)
-            current_data = download_current_data(tickers)
-            retries -= 1
-
-    results = []
-    status_text = st.empty()
-    progress_bar = st.progress(0)
-
-    for i, (symbol, name) in enumerate(all_stocks.items()):
-        status_text.text(f"Scanning... {i + 1}/{total_stocks_count} - {symbol}")
-        progress_bar.progress((i + 1) / total_stocks_count)
-
+    for i, (sym, name) in enumerate(stocks.items()):
+        status.text(f"Scanning {i+1}/{len(stocks)}: {sym}")
+        progress.progress((i+1)/len(stocks))
         try:
-            stock_df = data.get(f"{symbol}.NS", pd.DataFrame()).dropna(how='all').copy()
-            if not stock_df.empty:
-                if stock_df.index.tz is None:
-                    stock_df.index = stock_df.index.tz_localize('UTC')
-                stock_df.index = stock_df.index.tz_convert('Asia/Kolkata')
+            df = hist.get(f"{sym}.NS", pd.DataFrame()).dropna(how="all")
+            if df.empty: continue
+            if df.index.tz is None: df.index = df.index.tz_localize("UTC")
+            df.index = df.index.tz_convert("Asia/Kolkata")
 
-            current_df = current_data.get(f"{symbol}.NS", pd.DataFrame())
-            if not current_df.empty:
-                if current_df.index.tz is None:
-                    current_df.index = current_df.index.tz_localize('UTC')
-                current_df.index = current_df.index.tz_convert('Asia/Kolkata')
+            cdf = curr.get(f"{sym}.NS", pd.DataFrame())
+            if not cdf.empty:
+                if cdf.index.tz is None: cdf.index = cdf.index.tz_localize("UTC")
+                cdf.index = cdf.index.tz_convert("Asia/Kolkata")
+                latest = cdf.iloc[-1]
+                new_idx = pd.Timestamp(datetime.now(ist).date()).tz_localize("Asia/Kolkata")
+                row = pd.DataFrame({
+                    "Open":[latest["Open"]], "High":[latest["High"]],
+                    "Low":[latest["Low"]], "Close":[latest["Close"]],
+                    "Volume":[latest["Volume"]],
+                }, index=[new_idx])
+                if df.index[-1].date() == new_idx.date():
+                    df.iloc[-1] = row.iloc[0]
+                else:
+                    df = pd.concat([df, row])
 
-                latest_current = current_df.iloc[-1]
-                day_open = latest_current['Open']
-                day_high = latest_current['High']
-                day_low = latest_current['Low']
-                current_price = latest_current['Close']
-                volume = latest_current['Volume']
-                if volume > 0 and day_open > 0:
-                    current_date = datetime.now(ist).date()
-                    if not stock_df.empty:
-                        last_date = stock_df.index[-1].date()
-                        if last_date == current_date:
-                            last_index = stock_df.index[-1]
-                            stock_df.at[last_index, 'Close'] = current_price
-                            stock_df.at[last_index, 'High'] = max(stock_df.at[last_index, 'High'], day_high)
-                            stock_df.at[last_index, 'Low'] = min(stock_df.at[last_index, 'Low'], day_low)
-                            stock_df.at[last_index, 'Volume'] = volume
-                        elif last_date < current_date:
-                            new_index = pd.Timestamp(current_date).tz_localize('Asia/Kolkata')
-                            new_row = pd.DataFrame({
-                                'Open': [day_open],
-                                'High': [day_high],
-                                'Low': [day_low],
-                                'Close': [current_price],
-                                'Volume': [volume],
-                            }, index=[new_index])
-                            stock_df = pd.concat([stock_df, new_row])
-                    else:
-                        new_index = pd.Timestamp(current_date).tz_localize('Asia/Kolkata')
-                        new_row = pd.DataFrame({
-                            'Open': [day_open],
-                            'High': [day_high],
-                            'Low': [day_low],
-                            'Close': [current_price],
-                            'Volume': [volume],
-                        }, index=[new_index])
-                        stock_df = pd.concat([stock_df, new_row])
-
-            if passes_filters(stock_df, active_filters,
-                              rsi_daily_above_threshold,
-                              rsi_daily_crossed_threshold,
-                              rsi_weekly_above_threshold,
-                              rsi_weekly_crossed_threshold):
-                latest = stock_df.iloc[-1]
-                pct_change = ((latest['Close'] - latest['Open']) / latest['Open'] * 100) if latest['Open'] != 0 else 0
-                d_rsi = ta.RSI(stock_df['Close'], timeperiod=14).iloc[-1] if len(stock_df) > 14 else np.nan
-                weekly_data = stock_df.resample('W-MON').agg({'Close': 'last'}).dropna()
-                w_rsi = ta.RSI(weekly_data['Close'], timeperiod=14).iloc[-1] if len(weekly_data) > 14 else np.nan
+            if passes_filters(df, filters, rsi_d, rsi_d_cross, rsi_w, rsi_w_cross):
+                last = df.iloc[-1]
+                pct = ((last["Close"]-last["Open"])/last["Open"]*100) if last["Open"] else 0
+                d_rsi = ta.RSI(df["Close"],14).iloc[-1] if len(df)>14 else np.nan
+                w_rsi = ta.RSI(df.resample("W-MON")["Close"].last(),14).iloc[-1] if len(df)>14 else np.nan
                 results.append({
-                    "Symbol": symbol,
+                    "Symbol": sym,
                     "Name": name,
-                    "Close Price": f"₹{latest['Close']:.2f}",
-                    "% Change": f"{pct_change:+.2f}%",
-                    "Volume": f"{int(latest['Volume']):,}",
-                    "Daily RSI": f"{d_rsi:.2f}" if not pd.isna(d_rsi) else "N/A",
-                    "Weekly RSI": f"{w_rsi:.2f}" if not pd.isna(w_rsi) else "N/A"
+                    "Close Price": f"₹{last['Close']:.2f}",
+                    "% Change": f"{pct:+.2f}%",
+                    "Volume": f"{int(last['Volume']):,}",
+                    "Daily RSI": f"{d_rsi:.2f}" if pd.notna(d_rsi) else "N/A",
+                    "Weekly RSI": f"{w_rsi:.2f}" if pd.notna(w_rsi) else "N/A",
                 })
-        except KeyError:
+        except Exception:
             continue
 
-    end_time = datetime.now(ist)
-    scan_duration = end_time - start_time
-    status_text.empty()
-    progress_bar.empty()
-
-    st.markdown(f'<p class="results-header">Scan Results</p>', unsafe_allow_html=True)
-    scan_timestamp = f"Scan completed on **{end_time.strftime('%Y-%m-%d at %I:%M:%S %p')}** (Duration: **{str(scan_duration).split('.')[0]}**)."
+    progress.empty(); status.empty()
+    end = datetime.now(ist)
+    st.markdown('<p class="results-header">Scan Results</p>', unsafe_allow_html=True)
+    stamp = f"Scan finished **{end.strftime('%Y-%m-%d %I:%M %p')}** (Duration: {str(end-start).split('.')[0]})"
 
     if results:
-        st.success(f"✅ Found **{len(results)}** stocks that passed all filters. {scan_timestamp}")
-        results_df = pd.DataFrame(results)
-        results_df['Scan Date & Time'] = end_time.strftime('%Y-%m-%d %H:%M')
-        st.dataframe(results_df, use_container_width=True, hide_index=True)
-        csv = results_df.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            label="📥 Download Results as CSV",
-            data=csv,
-            file_name=f"stock_scan_{end_time.strftime('%Y%m%d_%H%M')}.csv",
-            mime="text/csv",
-        )
+        st.success(f"✅ {len(results)} stocks matched all filters. {stamp}")
+        df_out = pd.DataFrame(results)
+        df_out["Scan Time"] = end.strftime("%Y-%m-%d %H:%M")
+        st.dataframe(df_out, use_container_width=True, hide_index=True)
+        st.download_button("📥 Download CSV",
+                           df_out.to_csv(index=False).encode("utf-8"),
+                           f"scan_{end.strftime('%Y%m%d_%H%M')}.csv",
+                           "text/csv")
     else:
-        st.warning(f"⚠️ No stocks met all your criteria. {scan_timestamp}")
+        st.warning(f"⚠️ No stocks matched. {stamp}")
