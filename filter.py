@@ -172,7 +172,7 @@ def passes_filters(df, filters, rsi_daily_above_threshold=50.0, rsi_daily_crosse
         # Weekly RSI calculations
         weekly_data = df.resample('W-MON').agg({'Close': 'last'}).dropna()
         if filters.get("Weekly RSI >", False) or filters.get("Weekly RSI crossed", False):
-            if len(weekly_data) < 15: return False  # Ensure enough history for RSI(14)
+            if len(weekly_data) < 15: return False  # Ensure enough history for RSI
             w_rsi_series = ta.RSI(weekly_data['Close'], timeperiod=14)
             if w_rsi_series.dropna().shape[0] < 1: return False
             latest_w_rsi = w_rsi_series.iloc[-1]
@@ -213,28 +213,28 @@ with st.sidebar.expander("💹 Volume & RSI Filters", expanded=True):
     # Daily RSI > 
     col1, col2 = st.columns(2)
     with col1:
-        active_filters["Daily RSI >"] = st.checkbox("Daily RSI(14) >", True)
+        active_filters["Daily RSI >"] = st.checkbox("Daily RSI >", True)
     with col2:
         rsi_daily_above_threshold = st.number_input("Daily RSI > Threshold", min_value=0.0, max_value=100.0, value=50.0, step=0.1, label_visibility="collapsed")
     
     # Daily RSI Crossed Above
     col1, col2 = st.columns(2)
     with col1:
-        active_filters["Daily RSI crossed"] = st.checkbox("Daily RSI(14) Crossed Above", True)
+        active_filters["Daily RSI crossed"] = st.checkbox("Daily RSI Crossed Above", True)
     with col2:
         rsi_daily_crossed_threshold = st.number_input("Daily Crossed Threshold", min_value=0.0, max_value=100.0, value=50.0, step=0.1, label_visibility="collapsed")
     
     # Weekly RSI > 
     col1, col2 = st.columns(2)
     with col1:
-        active_filters["Weekly RSI >"] = st.checkbox("Weekly RSI(14) >", True)
+        active_filters["Weekly RSI >"] = st.checkbox("Weekly RSI >", True)
     with col2:
         rsi_weekly_above_threshold = st.number_input("Weekly RSI > Threshold", min_value=0.0, max_value=100.0, value=45.0, step=0.1, label_visibility="collapsed")
     
     # Weekly RSI Crossed Above
     col1, col2 = st.columns(2)
     with col1:
-        active_filters["Weekly RSI crossed"] = st.checkbox("Weekly RSI(14) Crossed Above", True)
+        active_filters["Weekly RSI crossed"] = st.checkbox("Weekly RSI Crossed Above", True)
     with col2:
         rsi_weekly_crossed_threshold = st.number_input("Weekly Crossed Threshold", min_value=0.0, max_value=100.0, value=59.0, step=0.1, label_visibility="collapsed")
 
