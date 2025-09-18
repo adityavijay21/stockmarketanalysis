@@ -130,7 +130,7 @@ def passes_filters(df, filters):
         latest = df.iloc[-1]
 
         if filters.get("Close > Open", False) and latest['Close'] <= latest['Open']: return False
-        if filters.get("Volume > 590k", False) and latest['Volume'] < 590000: return False
+        if filters.get("Volume > 500k", False) and latest['Volume'] < 500000: return False
         
         if len(df) >= 5:
             df['Range'] = df['High'] - df['Low']
@@ -180,7 +180,7 @@ with st.sidebar.expander("🗓️ Periodical Crossover Filters", expanded=True):
     active_filters["Close > Monthly Open"] = st.checkbox("Daily Close > Monthly Open", True)
     
 with st.sidebar.expander("💹 Volume & RSI Filters", expanded=True):
-    active_filters["Volume > 590k"] = st.checkbox("Daily Volume > 590,000", True)
+    active_filters["Volume > 500k"] = st.checkbox("Daily Volume > 500,000", True)
     active_filters["Weekly RSI > 45"] = st.checkbox("Weekly RSI(14) > 45", True)
     active_filters["RSI crossed 59"] = st.checkbox("Weekly RSI Crossed Above 59", True)
 
@@ -207,7 +207,7 @@ if st.button("🚀 Run Scan on All NSE Stocks"):
         retries = 3
         while current_data.empty and retries > 0:
             st.warning("Rate limit hit on current data download. Retrying after delay...")
-            time.sleep(59)  # Wait 1 minute
+            time.sleep(60)  # Wait 1 minute
             current_data = download_current_data(tickers)
             retries -= 1
 
