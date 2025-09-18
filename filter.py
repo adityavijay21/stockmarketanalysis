@@ -130,7 +130,7 @@ def passes_filters(df, filters):
         latest = df.iloc[-1]
 
         if filters.get("Close > Open", False) and latest['Close'] <= latest['Open']: return False
-        if filters.get("Volume > 600k", False) and latest['Volume'] < 600000: return False
+        if filters.get("Volume > 550k", False) and latest['Volume'] < 550000: return False
         
         if len(df) >= 5:
             df['Range'] = df['High'] - df['Low']
@@ -146,7 +146,7 @@ def passes_filters(df, filters):
             monthly_open = df['Open'].resample('MS').first().iloc[-1]
             if pd.isna(monthly_open) or latest['Close'] <= monthly_open: return False
 
-        if filters.get("Weekly RSI > 45", False) or filters.get("RSI crossed 60", False):
+        if filters.get("Weekly RSI > 45", False) or filters.get("RSI crossed 55", False):
             weekly_data = df.resample('W-MON').agg({'Close': 'last'}).dropna()
             if len(weekly_data) < 15: return False
             w_rsi = ta.RSI(weekly_data['Close'], timeperiod=14)
@@ -154,7 +154,7 @@ def passes_filters(df, filters):
             latest_rsi, prev_rsi = w_rsi.iloc[-1], w_rsi.iloc[-2]
             if pd.isna(latest_rsi) or pd.isna(prev_rsi): return False
             if filters.get("Weekly RSI > 45", False) and latest_rsi <= 45: return False
-            if filters.get("RSI crossed 60", False) and not (prev_rsi < 60 and latest_rsi > 60): return False
+            if filters.get("RSI crossed 55", False) and not (prev_rsi < 55 and latest_rsi > 55): return False
         
         return True
     
@@ -180,9 +180,9 @@ with st.sidebar.expander("🗓️ Periodical Crossover Filters", expanded=True):
     active_filters["Close > Monthly Open"] = st.checkbox("Daily Close > Monthly Open", True)
     
 with st.sidebar.expander("💹 Volume & RSI Filters", expanded=True):
-    active_filters["Volume > 600k"] = st.checkbox("Daily Volume > 600,000", True)
+    active_filters["Volume > 550k"] = st.checkbox("Daily Volume > 550,000", True)
     active_filters["Weekly RSI > 45"] = st.checkbox("Weekly RSI(14) > 45", True)
-    active_filters["RSI crossed 60"] = st.checkbox("Weekly RSI Crossed Above 60", True)
+    active_filters["RSI crossed 55"] = st.checkbox("Weekly RSI Crossed Above 55", True)
 
 st.sidebar.markdown("---")
 # --- Main Application Logic ---
@@ -207,7 +207,7 @@ if st.button("🚀 Run Scan on All NSE Stocks"):
         retries = 3
         while current_data.empty and retries > 0:
             st.warning("Rate limit hit on current data download. Retrying after delay...")
-            time.sleep(60)  # Wait 1 minute
+            time.sleep(55)  # Wait 1 minute
             current_data = download_current_data(tickers)
             retries -= 1
 
