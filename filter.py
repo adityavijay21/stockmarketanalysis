@@ -146,7 +146,7 @@ def passes_filters(df, filters):
             monthly_open = df['Open'].resample('MS').first().iloc[-1]
             if pd.isna(monthly_open) or latest['Close'] <= monthly_open: return False
 
-        if filters.get("Weekly RSI > 45", False) or filters.get("RSI crossed 56", False):
+        if filters.get("Weekly RSI > 45", False) or filters.get("RSI crossed 50", False):
             weekly_data = df.resample('W-MON').agg({'Close': 'last'}).dropna()
             if len(weekly_data) < 15: return False
             w_rsi = ta.RSI(weekly_data['Close'], timeperiod=14)
@@ -154,7 +154,7 @@ def passes_filters(df, filters):
             latest_rsi, prev_rsi = w_rsi.iloc[-1], w_rsi.iloc[-2]
             if pd.isna(latest_rsi) or pd.isna(prev_rsi): return False
             if filters.get("Weekly RSI > 45", False) and latest_rsi <= 45: return False
-            if filters.get("RSI crossed 56", False) and not (prev_rsi < 56 and latest_rsi > 56): return False
+            if filters.get("RSI crossed 50", False) and not (prev_rsi < 50 and latest_rsi > 50): return False
         
         return True
     
@@ -182,7 +182,7 @@ with st.sidebar.expander("🗓️ Periodical Crossover Filters", expanded=True):
 with st.sidebar.expander("💹 Volume & RSI Filters", expanded=True):
     active_filters["Volume > 500k"] = st.checkbox("Daily Volume > 500,000", True)
     active_filters["Weekly RSI > 45"] = st.checkbox("Weekly RSI(14) > 45", True)
-    active_filters["RSI crossed 56"] = st.checkbox("Weekly RSI Crossed Above 56", True)
+    active_filters["RSI crossed 50"] = st.checkbox("Weekly RSI Crossed Above 50", True)
 
 st.sidebar.markdown("---")
 # --- Main Application Logic ---
