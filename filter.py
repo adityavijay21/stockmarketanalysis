@@ -130,7 +130,7 @@ def download_current_data(tickers):
         return pd.DataFrame()  # Empty on failure
 
 # --- Core Filtering Logic ---
-def passes_filters(df, filters, rsi_above_threshold=45.0, rsi_crossed_threshold=59.0):
+def passes_filters(df, filters, rsi_daily_crossed_threshold=50.0, rsi_weekly_crossed_threshold=59.0):
     """Check if a stock's DataFrame passes all active filters."""
     try:
         if df is None or df.empty or len(df) < 30: return False
@@ -156,15 +156,21 @@ def passes_filters(df, filters, rsi_above_threshold=45.0, rsi_crossed_threshold=
             monthly_open = df['Open'].resample('MS').first().iloc[-1]
             if pd.isna(monthly_open) or latest['Close'] <= monthly_open: return False
 
-        if filters.get("Weekly RSI >", False) or filters.get("RSI crossed", False):
+        if filters.get("Daily RSI crossed", False):
+            d_rsi = ta.RSI(df['Close'], timeperiod=14)
+            if d_rsi.dropna().shape[0] < 2: return False
+            latest_d_rsi, prev_d_rsi = d_rsi.iloc[-1], d_rsi.iloc[-2]
+            if pd.isna(latest_d_rsi) or pd.isna(prev_d_rsi): return False
+            if not (prev_d_rsi < rsi_daily_crossed_threshold and latest_d_rsi > rsi_daily_crossed_threshold): return False
+        
+        if filters.get("Weekly RSI crossed", False):
             weekly_data = df.resample('W-MON').agg({'Close': 'last'}).dropna()
             if len(weekly_data) < 15: return False
             w_rsi = ta.RSI(weekly_data['Close'], timeperiod=14)
             if w_rsi.dropna().shape[0] < 2: return False
             latest_rsi, prev_rsi = w_rsi.iloc[-1], w_rsi.iloc[-2]
             if pd.isna(latest_rsi) or pd.isna(prev_rsi): return False
-            if filters.get("Weekly RSI >", False) and latest_rsi <= rsi_above_threshold: return False
-            if filters.get("RSI crossed", False) and not (prev_rsi < rsi_crossed_threshold and latest_rsi > rsi_crossed_threshold): return False
+            if not (prev_rsi < rsi_weekly_crossed_threshold and latest_rsi > rsi_weekly_crossed_threshold): return False
         
         return True
     
@@ -194,15 +200,15 @@ with st.sidebar.expander("💹 Volume & RSI Filters", expanded=True):
     
     col1, col2 = st.columns(2)
     with col1:
-        active_filters["Weekly RSI >"] = st.checkbox("Weekly RSI(14) >", True)
+        active_filters["Daily RSI crossed"] = st.checkbox("Daily RSI(14) Crossed Above", True)
     with col2:
-        rsi_above_threshold = st.number_input("RSI > Threshold", min_value=0.0, max_value=100.0, value=45.0, step=0.1, label_visibility="collapsed")
+        rsi_daily_crossed_threshold = st.number_input("Daily Crossed Threshold", min_value=0.0, max_value=100.0, value=50.0, step=0.1, label_visibility="collapsed")
     
     col1, col2 = st.columns(2)
     with col1:
-        active_filters["RSI crossed"] = st.checkbox("Weekly RSI Crossed Above", True)
+        active_filters["Weekly RSI crossed"] = st.checkbox("Weekly RSI(14) Crossed Above", True)
     with col2:
-        rsi_crossed_threshold = st.number_input("Crossed Threshold", min_value=0.0, max_value=100.0, value=59.0, step=0.1, label_visibility="collapsed")
+        rsi_weekly_crossed_threshold = st.number_input("Weekly Crossed Threshold", min_value=0.0, max_value=100.0, value=59.0, step=0.1, label_visibility="collapsed")
 
 st.sidebar.markdown("---")
 # --- Main Application Logic ---
@@ -265,17 +271,28 @@ if st.button("🚀 Run Scan on All NSE Stocks"):
                 
                 if volume > 0 and day_open > 0:
                     current_date = datetime.now(ist).date()
-                    last_date = stock_df.index[-1].date()
-                    if last_date == current_date:
-                        # Update existing today's row
-                        last_index = stock_df.index[-1]
-                        stock_df.at[last_index, 'Close'] = current_price
-                        # Update High/Low if current is more extreme (though yf provides aggregated)
-                        stock_df.at[last_index, 'High'] = max(stock_df.at[last_index, 'High'], day_high)
-                        stock_df.at[last_index, 'Low'] = min(stock_df.at[last_index, 'Low'], day_low)
-                        stock_df.at[last_index, 'Volume'] = volume
-                    elif last_date < current_date:
-                        # Add new row for today
+                    if not stock_df.empty:
+                        last_date = stock_df.index[-1].date()
+                        if last_date == current_date:
+                            # Update existing today's row
+                            last_index = stock_df.index[-1]
+                            stock_df.at[last_index, 'Close'] = current_price
+                            stock_df.at[last_index, 'High'] = max(stock_df.at[last_index, 'High'], day_high)
+                            stock_df.at[last_index, 'Low'] = min(stock_df.at[last_index, 'Low'], day_low)
+                            stock_df.at[last_index, 'Volume'] = volume
+                        elif last_date < current_date:
+                            # Add new row for today
+                            new_index = pd.Timestamp(current_date).tz_localize('Asia/Kolkata')
+                            new_row = pd.DataFrame({
+                                'Open': [day_open],
+                                'High': [day_high],
+                                'Low': [day_low],
+                                'Close': [current_price],
+                                'Volume': [volume],
+                            }, index=[new_index])
+                            stock_df = pd.concat([stock_df, new_row])
+                    else:
+                        # Stock_df is empty; add new row directly
                         new_index = pd.Timestamp(current_date).tz_localize('Asia/Kolkata')
                         new_row = pd.DataFrame({
                             'Open': [day_open],
@@ -286,7 +303,7 @@ if st.button("🚀 Run Scan on All NSE Stocks"):
                         }, index=[new_index])
                         stock_df = pd.concat([stock_df, new_row])
             
-            if passes_filters(stock_df, active_filters, rsi_above_threshold, rsi_crossed_threshold):
+            if passes_filters(stock_df, active_filters, rsi_daily_crossed_threshold, rsi_weekly_crossed_threshold):
                 latest = stock_df.iloc[-1]
                 pct_change = ((latest['Close'] - latest['Open']) / latest['Open'] * 100) if latest['Open'] != 0 else 0
                 results.append({
