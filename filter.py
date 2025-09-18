@@ -1,0 +1,268 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+import yfinance as yf
+import requests
+import talib as ta
+import json
+from datetime import datetime
+from pathlib import Path
+from typing import Tuple, Dict
+
+# --- Page Configuration ---
+st.set_page_config(
+    page_title="📈 NSE 10-Filter Stock Screener",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# --- Custom CSS for a Polished Look ---
+st.markdown("""
+<style>
+    .main-header {
+        background: linear-gradient(90deg, #001f3f 0%, #0074D9 100%);
+        padding: 1.5rem;
+        border-radius: 10px;
+        margin-bottom: 2rem;
+        text-align: center;
+        color: white;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    }
+    .stButton>button {
+        width: 100%;
+        border-radius: 8px;
+        font-weight: bold;
+        border: 2px solid #0074D9;
+        background-color: #0074D9;
+        color: white;
+        transition: all 0.2s ease-in-out;
+    }
+    .stButton>button:hover {
+        background-color: white;
+        color: #0074D9;
+        border-color: #0074D9;
+    }
+    .results-header {
+        font-size: 1.8rem;
+        font-weight: bold;
+        color: #001f3f;
+        margin-top: 2rem;
+        border-bottom: 2px solid #0074D9;
+        padding-bottom: 0.5rem;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+
+# --- Data Loading & Caching ---
+@st.cache_data(ttl=43200) # Cache for 12 hours
+def load_nse_stocks() -> Tuple[Dict, str]:
+    """
+    Loads the full list of NSE stocks.
+    Returns a tuple containing: (stock_dictionary, status_message).
+    """
+    try:
+        url = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
+        df = pd.read_csv(url)
+        df.dropna(subset=['SYMBOL', 'NAME OF COMPANY'], inplace=True)
+        df = df[df['SERIES'] == 'EQ']
+        stock_dict = dict(zip(df['SYMBOL'], df['NAME OF COMPANY']))
+        return stock_dict, f"Successfully loaded {len(stock_dict)} stocks from NSE."
+    except Exception:
+        pass
+
+    try:
+        json_path = Path("indian_stocks.json")
+        if json_path.exists():
+            with open(json_path, "r") as f:
+                stock_list = json.load(f)
+                stock_dict = {item['symbol'].replace('.NS', ''): item['name'] for item in stock_list}
+                return stock_dict, f"Loaded {len(stock_dict)} stocks from local file."
+        else:
+            raise FileNotFoundError
+    except Exception:
+        fallback_stocks = {
+            "RELIANCE": "Reliance Industries Ltd.", "TCS": "Tata Consultancy Services"
+        }
+        return fallback_stocks, "Using a small fallback list."
+
+
+@st.cache_data(ttl=1800) # Cache data for 30 minutes
+def download_all_data(tickers):
+    """Downloads historical data for a list of tickers."""
+    today = datetime.now()
+    start_date = today - pd.DateOffset(years=2)
+    data = yf.download(
+        tickers,
+        start=start_date.strftime('%Y-%m-%d'),
+        group_by='ticker',
+        auto_adjust=True,
+        threads=False
+    )
+    return data
+
+# --- Core Filtering Logic ---
+def passes_filters(df, filters):
+    """Check if a stock's DataFrame passes all active filters."""
+    try:
+        if df is None or df.empty or len(df) < 30: return False
+        
+        df = df.copy()
+        df.index = pd.to_datetime(df.index)
+        latest = df.iloc[-1]
+
+        if filters.get("Close > Open", False) and latest['Close'] <= latest['Open']: return False
+        if filters.get("Volume > 500k", False) and latest['Volume'] < 500000: return False
+        
+        if len(df) >= 5:
+            df['Range'] = df['High'] - df['Low']
+            for i in range(1, 5):
+                if filters.get(f"Range > {i}d ago", False):
+                    if df['Range'].iloc[-1] <= df['Range'].iloc[-(i + 1)]: return False
+        
+        if filters.get("Close > Weekly Open", False):
+            weekly_open = df['Open'].resample('W-MON').first().iloc[-1]
+            if pd.isna(weekly_open) or latest['Close'] <= weekly_open: return False
+            
+        if filters.get("Close > Monthly Open", False):
+            monthly_open = df['Open'].resample('MS').first().iloc[-1]
+            if pd.isna(monthly_open) or latest['Close'] <= monthly_open: return False
+
+        if filters.get("Weekly RSI > 45", False) or filters.get("RSI crossed 59", False):
+            weekly_data = df.resample('W-MON').agg({'Close': 'last'}).dropna()
+            if len(weekly_data) < 15: return False
+            w_rsi = ta.RSI(weekly_data['Close'], timeperiod=14)
+            if w_rsi.dropna().shape[0] < 2: return False
+            latest_rsi, prev_rsi = w_rsi.iloc[-1], w_rsi.iloc[-2]
+            if pd.isna(latest_rsi) or pd.isna(prev_rsi): return False
+            if filters.get("Weekly RSI > 45", False) and latest_rsi <= 45: return False
+            if filters.get("RSI crossed 59", False) and not (prev_rsi < 59 and latest_rsi > 59): return False
+        
+        return True
+    
+    except (IndexError, KeyError, Exception):
+        return False
+
+# ------------------- Streamlit UI Layout ------------------- #
+
+# st.markdown('<div class="main-header"><h1>🇮🇳 NSE 10-Filter Stock Screener</h1></div>', unsafe_allow_html=True)
+
+# --- Sidebar for Filter Selection ---
+st.sidebar.header("📊 Filter Conditions")
+st.sidebar.write("Select criteria to find stocks that meet ALL conditions.")
+
+active_filters = {}
+with st.sidebar.expander("📈 Daily Price/Range Filters", expanded=True):
+    active_filters["Close > Open"] = st.checkbox("Daily Close > Daily Open", True)
+    for i in range(1, 5):
+        active_filters[f"Range > {i}d ago"] = st.checkbox(f"Daily Range > {i} Day(s) Ago", True)
+
+with st.sidebar.expander("🗓️ Periodical Crossover Filters", expanded=True):
+    active_filters["Close > Weekly Open"] = st.checkbox("Daily Close > Weekly Open", True)
+    active_filters["Close > Monthly Open"] = st.checkbox("Daily Close > Monthly Open", True)
+    
+with st.sidebar.expander("💹 Volume & RSI Filters", expanded=True):
+    active_filters["Volume > 500k"] = st.checkbox("Daily Volume > 500,000", True)
+    active_filters["Weekly RSI > 45"] = st.checkbox("Weekly RSI(14) > 45", True)
+    active_filters["RSI crossed 59"] = st.checkbox("Weekly RSI Crossed Above 59", True)
+
+st.sidebar.markdown("---")
+# --- Main Application Logic ---
+
+all_stocks, status_message = load_nse_stocks()
+st.toast(status_message, icon="✅")
+
+total_stocks_count = len(all_stocks)
+st.info(f"Ready to scan **{total_stocks_count}** stocks based on your selected filters.")
+
+if st.button("🚀 Run Scan on All NSE Stocks"):
+    start_time = datetime.now()
+    
+    with st.spinner(f"Downloading data for {total_stocks_count} stocks... This may take a minute or two."):
+        tickers = [f"{symbol}.NS" for symbol in all_stocks.keys()]
+        data = download_all_data(tickers)
+
+    results = []
+    status_text = st.empty()
+    progress_bar = st.progress(0)
+
+    for i, (symbol, name) in enumerate(all_stocks.items()):
+        status_text.text(f"Scanning... {i + 1}/{total_stocks_count} - {symbol}")
+        progress_bar.progress((i + 1) / total_stocks_count)
+        
+        try:
+            stock_df = data[f"{symbol}.NS"].dropna(how='all').copy()
+            
+            # Fetch and incorporate current market data
+            ticker = yf.Ticker(f"{symbol}.NS")
+            info = ticker.info
+            current_price = info.get('regularMarketPrice')
+            day_open = info.get('regularMarketOpen')
+            day_high = info.get('regularMarketDayHigh')
+            day_low = info.get('regularMarketDayLow')
+            volume = info.get('regularMarketVolume')
+            
+            if current_price and volume and volume > 0 and day_open and day_open > 0:
+                current_date = datetime.now().date()
+                if not stock_df.empty:
+                    last_date = stock_df.index[-1].date()
+                else:
+                    last_date = current_date - pd.Timedelta(days=1)
+                
+                if last_date == current_date:
+                    # Update existing today's row with latest values
+                    last_index = stock_df.index[-1]
+                    stock_df.at[last_index, 'Close'] = current_price
+                    stock_df.at[last_index, 'High'] = day_high
+                    stock_df.at[last_index, 'Low'] = day_low
+                    stock_df.at[last_index, 'Volume'] = volume
+                elif last_date < current_date:
+                    # Add new row for today
+                    new_index = pd.Timestamp(current_date)
+                    new_row = pd.DataFrame({
+                        'Open': [day_open],
+                        'High': [day_high],
+                        'Low': [day_low],
+                        'Close': [current_price],
+                        'Volume': [volume],
+                    }, index=[new_index])
+                    stock_df = pd.concat([stock_df, new_row])
+            
+            if passes_filters(stock_df, active_filters):
+                latest = stock_df.iloc[-1]
+                pct_change = ((latest['Close'] - latest['Open']) / latest['Open'] * 100) if latest['Open'] != 0 else 0
+                results.append({
+                    "Symbol": symbol,
+                    "Name": name,
+                    "Close Price": f"₹{latest['Close']:.2f}",
+                    "% Change": f"{pct_change:+.2f}%",
+                    "Volume": f"{int(latest['Volume']):,}"
+                })
+        except KeyError:
+            continue
+    
+    end_time = datetime.now()
+    scan_duration = end_time - start_time
+    status_text.empty()
+    progress_bar.empty()
+
+    # --- Display Results ---
+    st.markdown(f'<p class="results-header">Scan Results</p>', unsafe_allow_html=True)
+    scan_timestamp = f"Scan completed on **{end_time.strftime('%Y-%m-%d at %I:%M:%S %p')}** (Duration: **{str(scan_duration).split('.')[0]}**)."
+    
+    if results:
+        st.success(f"✅ Found **{len(results)}** stocks that passed all filters. {scan_timestamp}")
+        results_df = pd.DataFrame(results)
+        results_df['Scan Date & Time'] = end_time.strftime('%Y-%m-%d %H:%M')
+        
+        st.dataframe(results_df, use_container_width=True, hide_index=True)
+
+        csv = results_df.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="📥 Download Results as CSV",
+            data=csv,
+            file_name=f"stock_scan_{end_time.strftime('%Y%m%d_%H%M')}.csv",
+            mime="text/csv",
+        )
+    else:
+        st.warning(f"⚠️ No stocks met all your criteria. Try removing some filters. {scan_timestamp}")
