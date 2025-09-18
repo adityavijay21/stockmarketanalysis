@@ -130,7 +130,7 @@ def download_current_data(tickers):
         return pd.DataFrame()  # Empty on failure
 
 # --- Core Filtering Logic ---
-def passes_filters(df, filters, rsi_daily_above_threshold=50.0, rsi_daily_crossed_threshold=50.0, rsi_weekly_above_threshold=45.0, rsi_weekly_crossed_threshold=59.0):
+def passes_filters(df, enable_volume, volume_timeframe, volume_operator, volume_threshold, enable_daily_rsi, daily_rsi_operator, daily_rsi_threshold, enable_weekly_rsi, weekly_rsi_operator, weekly_rsi_threshold):
     """Check if a stock's DataFrame passes all active filters."""
     try:
         if df is None or df.empty or len(df) < 30: return False
@@ -140,7 +140,28 @@ def passes_filters(df, filters, rsi_daily_above_threshold=50.0, rsi_daily_crosse
         latest = df.iloc[-1]
 
         if filters.get("Close > Open", False) and latest['Close'] <= latest['Open']: return False
-        if filters.get("Volume > 500k", False) and latest['Volume'] < 500000: return False
+        
+        # Volume Filter
+        if enable_volume:
+            if volume_timeframe == "Daily":
+                current_vol = latest['Volume']
+                prev_vol = df['Volume'].iloc[-2] if len(df) > 1 else np.nan
+            else:  # Weekly
+                weekly_vol = df.resample('W-MON').agg({'Volume': 'sum'}).dropna()
+                if len(weekly_vol) < 1: return False
+                current_vol = weekly_vol['Volume'].iloc[-1]
+                prev_vol = weekly_vol['Volume'].iloc[-2] if len(weekly_vol) > 1 else np.nan
+            
+            if pd.isna(current_vol): return False
+            
+            if volume_operator == "Greater Than" and current_vol <= volume_threshold: return False
+            if volume_operator == "Less Than" and current_vol >= volume_threshold: return False
+            if volume_operator == "Cross Above":
+                if pd.isna(prev_vol): return False
+                if not (prev_vol < volume_threshold and current_vol > volume_threshold): return False
+            if volume_operator == "Cross Below":
+                if pd.isna(prev_vol): return False
+                if not (prev_vol > volume_threshold and current_vol < volume_threshold): return False
         
         if len(df) >= 5:
             df['Range'] = df['High'] - df['Low']
@@ -156,33 +177,37 @@ def passes_filters(df, filters, rsi_daily_above_threshold=50.0, rsi_daily_crosse
             monthly_open = df['Open'].resample('MS').first().iloc[-1]
             if pd.isna(monthly_open) or latest['Close'] <= monthly_open: return False
 
-        # Daily RSI calculations
-        if filters.get("Daily RSI >", False) or filters.get("Daily RSI crossed", False):
-            d_rsi_series = ta.RSI(df['Close'], timeperiod=14)
-            if d_rsi_series.dropna().shape[0] < 1: return False  # Need at least one for > check
-            latest_d_rsi = d_rsi_series.iloc[-1]
-            if pd.isna(latest_d_rsi): return False
-            if filters.get("Daily RSI >", False) and latest_d_rsi <= rsi_daily_above_threshold: return False
-            if filters.get("Daily RSI crossed", False):
-                if d_rsi_series.dropna().shape[0] < 2: return False
-                prev_d_rsi = d_rsi_series.iloc[-2]
+        # Daily RSI Filter
+        if enable_daily_rsi:
+            d_rsi = ta.RSI(df['Close'], timeperiod=14)
+            if d_rsi.dropna().shape[0] < 1: return False
+            current_d_rsi = d_rsi.iloc[-1]
+            if pd.isna(current_d_rsi): return False
+            if daily_rsi_operator == "Greater Than" and current_d_rsi <= daily_rsi_threshold: return False
+            if daily_rsi_operator == "Less Than" and current_d_rsi >= daily_rsi_threshold: return False
+            if daily_rsi_operator in ["Cross Above", "Cross Below"]:
+                if d_rsi.dropna().shape[0] < 2: return False
+                prev_d_rsi = d_rsi.iloc[-2]
                 if pd.isna(prev_d_rsi): return False
-                if not (prev_d_rsi < rsi_daily_crossed_threshold and latest_d_rsi > rsi_daily_crossed_threshold): return False
+                if daily_rsi_operator == "Cross Above" and not (prev_d_rsi < daily_rsi_threshold and current_d_rsi > daily_rsi_threshold): return False
+                if daily_rsi_operator == "Cross Below" and not (prev_d_rsi > daily_rsi_threshold and current_d_rsi < daily_rsi_threshold): return False
 
-        # Weekly RSI calculations
-        weekly_data = df.resample('W-MON').agg({'Close': 'last'}).dropna()
-        if filters.get("Weekly RSI >", False) or filters.get("Weekly RSI crossed", False):
-            if len(weekly_data) < 15: return False  # Ensure enough history for RSI(14)
-            w_rsi_series = ta.RSI(weekly_data['Close'], timeperiod=14)
-            if w_rsi_series.dropna().shape[0] < 1: return False
-            latest_w_rsi = w_rsi_series.iloc[-1]
-            if pd.isna(latest_w_rsi): return False
-            if filters.get("Weekly RSI >", False) and latest_w_rsi <= rsi_weekly_above_threshold: return False
-            if filters.get("Weekly RSI crossed", False):
-                if w_rsi_series.dropna().shape[0] < 2: return False
-                prev_w_rsi = w_rsi_series.iloc[-2]
+        # Weekly RSI Filter
+        if enable_weekly_rsi:
+            weekly_data = df.resample('W-MON').agg({'Close': 'last'}).dropna()
+            if len(weekly_data) < 15: return False
+            w_rsi = ta.RSI(weekly_data['Close'], timeperiod=14)
+            if w_rsi.dropna().shape[0] < 1: return False
+            current_w_rsi = w_rsi.iloc[-1]
+            if pd.isna(current_w_rsi): return False
+            if weekly_rsi_operator == "Greater Than" and current_w_rsi <= weekly_rsi_threshold: return False
+            if weekly_rsi_operator == "Less Than" and current_w_rsi >= weekly_rsi_threshold: return False
+            if weekly_rsi_operator in ["Cross Above", "Cross Below"]:
+                if w_rsi.dropna().shape[0] < 2: return False
+                prev_w_rsi = w_rsi.iloc[-2]
                 if pd.isna(prev_w_rsi): return False
-                if not (prev_w_rsi < rsi_weekly_crossed_threshold and latest_w_rsi > rsi_weekly_crossed_threshold): return False
+                if weekly_rsi_operator == "Cross Above" and not (prev_w_rsi < weekly_rsi_threshold and current_w_rsi > weekly_rsi_threshold): return False
+                if weekly_rsi_operator == "Cross Below" and not (prev_w_rsi > weekly_rsi_threshold and current_w_rsi < weekly_rsi_threshold): return False
         
         return True
     
@@ -199,44 +224,30 @@ st.sidebar.write("Select criteria to find stocks that meet ALL conditions.")
 
 active_filters = {}
 with st.sidebar.expander("📈 Daily Price/Range Filters", expanded=True):
-    active_filters["Close > Open"] = st.checkbox("Daily Close > Daily Open", True)
+    active_filters["Close > Open"] = st.checkbox("Daily Close > Daily Open", True, help="Filter stocks where today's close is greater than open.")
     for i in range(1, 5):
-        active_filters[f"Range > {i}d ago"] = st.checkbox(f"Daily Range > {i} Day(s) Ago", True)
+        active_filters[f"Range > {i}d ago"] = st.checkbox(f"Daily Range > {i} Day(s) Ago", True, help=f"Today's range greater than {i} day(s) ago.")
 
 with st.sidebar.expander("🗓️ Periodical Crossover Filters", expanded=True):
-    active_filters["Close > Weekly Open"] = st.checkbox("Daily Close > Weekly Open", True)
-    active_filters["Close > Monthly Open"] = st.checkbox("Daily Close > Monthly Open", True)
+    active_filters["Close > Weekly Open"] = st.checkbox("Daily Close > Weekly Open", True, help="Close above the week's opening price.")
+    active_filters["Close > Monthly Open"] = st.checkbox("Daily Close > Monthly Open", True, help="Close above the month's opening price.")
     
 with st.sidebar.expander("💹 Volume & RSI Filters", expanded=True):
-    active_filters["Volume > 500k"] = st.checkbox("Daily Volume > 500,000", True)
+    # Volume Filter
+    enable_volume = st.checkbox("Enable Volume Filter", True, help="Toggle to apply volume-based filtering.")
+    volume_timeframe = st.selectbox("Volume Timeframe", ["Daily", "Weekly"], help="Daily: Today's volume; Weekly: Sum of volume over the week.")
+    volume_operator = st.selectbox("Volume Operator", ["Greater Than", "Less Than", "Cross Above", "Cross Below"], help="Greater/Less: Compare current value; Cross: Check crossover from previous period.")
+    volume_threshold = st.number_input("Volume Threshold", min_value=0, value=500000, step=10000, help="Threshold value for volume condition (e.g., 500,000).")
     
-    # Daily RSI > 
-    col1, col2 = st.columns(2)
-    with col1:
-        active_filters["Daily RSI >"] = st.checkbox("Daily RSI(14) >", True)
-    with col2:
-        rsi_daily_above_threshold = st.number_input("Daily RSI > Threshold", min_value=0.0, max_value=100.0, value=50.0, step=0.1, label_visibility="collapsed")
-    
-    # Daily RSI Crossed Above
-    col1, col2 = st.columns(2)
-    with col1:
-        active_filters["Daily RSI crossed"] = st.checkbox("Daily RSI(14) Crossed Above", True)
-    with col2:
-        rsi_daily_crossed_threshold = st.number_input("Daily Crossed Threshold", min_value=0.0, max_value=100.0, value=50.0, step=0.1, label_visibility="collapsed")
-    
-    # Weekly RSI > 
-    col1, col2 = st.columns(2)
-    with col1:
-        active_filters["Weekly RSI >"] = st.checkbox("Weekly RSI(14) >", True)
-    with col2:
-        rsi_weekly_above_threshold = st.number_input("Weekly RSI > Threshold", min_value=0.0, max_value=100.0, value=45.0, step=0.1, label_visibility="collapsed")
-    
-    # Weekly RSI Crossed Above
-    col1, col2 = st.columns(2)
-    with col1:
-        active_filters["Weekly RSI crossed"] = st.checkbox("Weekly RSI(14) Crossed Above", True)
-    with col2:
-        rsi_weekly_crossed_threshold = st.number_input("Weekly Crossed Threshold", min_value=0.0, max_value=100.0, value=59.0, step=0.1, label_visibility="collapsed")
+    # Daily RSI Filter
+    enable_daily_rsi = st.checkbox("Enable Daily RSI Filter", True, help="Toggle to apply daily RSI conditions.")
+    daily_rsi_operator = st.selectbox("Daily RSI Operator", ["Greater Than", "Less Than", "Cross Above", "Cross Below"], help="Greater/Less: Current RSI level; Cross: Crossover from previous day.")
+    daily_rsi_threshold = st.number_input("Daily RSI Threshold", min_value=0.0, max_value=100.0, value=50.0, step=0.1, help="Common values: 30 (oversold), 50 (centerline), 70 (overbought).")
+
+    # Weekly RSI Filter
+    enable_weekly_rsi = st.checkbox("Enable Weekly RSI Filter", True, help="Toggle to apply weekly RSI conditions.")
+    weekly_rsi_operator = st.selectbox("Weekly RSI Operator", ["Greater Than", "Less Than", "Cross Above", "Cross Below"], help="Greater/Less: Current RSI level; Cross: Crossover from previous week.")
+    weekly_rsi_threshold = st.number_input("Weekly RSI Threshold", min_value=0.0, max_value=100.0, value=59.0, step=0.1, help="Common values: 45, 50, 56, 59 for momentum signals.")
 
 st.sidebar.markdown("---")
 # --- Main Application Logic ---
@@ -255,9 +266,7 @@ if st.button("🚀 Run Scan on All NSE Stocks"):
         data = download_all_data(tickers)
     
     with st.spinner("Downloading current market data..."):
-        # NEW: Batch fetch current data
         current_data = download_current_data(tickers)
-        # Optional: Retry logic for rate limit
         retries = 3
         while current_data.empty and retries > 0:
             st.warning("Rate limit hit on current data download. Retrying after delay...")
@@ -282,10 +291,9 @@ if st.button("🚀 Run Scan on All NSE Stocks"):
                     stock_df.index = stock_df.index.tz_localize('UTC')
                 stock_df.index = stock_df.index.tz_convert('Asia/Kolkata')
             
-            # NEW: Incorporate batched current market data
+            # Incorporate batched current market data
             current_df = current_data.get(f"{symbol}.NS", pd.DataFrame())
             if not current_df.empty:
-                # Handle timezone for current data
                 if current_df.index.tz is None:
                     current_df.index = current_df.index.tz_localize('UTC')
                 current_df.index = current_df.index.tz_convert('Asia/Kolkata')
@@ -302,14 +310,12 @@ if st.button("🚀 Run Scan on All NSE Stocks"):
                     if not stock_df.empty:
                         last_date = stock_df.index[-1].date()
                         if last_date == current_date:
-                            # Update existing today's row
                             last_index = stock_df.index[-1]
                             stock_df.at[last_index, 'Close'] = current_price
                             stock_df.at[last_index, 'High'] = max(stock_df.at[last_index, 'High'], day_high)
                             stock_df.at[last_index, 'Low'] = min(stock_df.at[last_index, 'Low'], day_low)
                             stock_df.at[last_index, 'Volume'] = volume
                         elif last_date < current_date:
-                            # Add new row for today
                             new_index = pd.Timestamp(current_date).tz_localize('Asia/Kolkata')
                             new_row = pd.DataFrame({
                                 'Open': [day_open],
@@ -320,7 +326,6 @@ if st.button("🚀 Run Scan on All NSE Stocks"):
                             }, index=[new_index])
                             stock_df = pd.concat([stock_df, new_row])
                     else:
-                        # Stock_df is empty; add new row directly
                         new_index = pd.Timestamp(current_date).tz_localize('Asia/Kolkata')
                         new_row = pd.DataFrame({
                             'Open': [day_open],
@@ -331,11 +336,11 @@ if st.button("🚀 Run Scan on All NSE Stocks"):
                         }, index=[new_index])
                         stock_df = pd.concat([stock_df, new_row])
             
-            if passes_filters(stock_df, active_filters, rsi_daily_above_threshold, rsi_daily_crossed_threshold, rsi_weekly_above_threshold, rsi_weekly_crossed_threshold):
+            if passes_filters(stock_df, enable_volume, volume_timeframe, volume_operator, volume_threshold, enable_daily_rsi, daily_rsi_operator, daily_rsi_threshold, enable_weekly_rsi, weekly_rsi_operator, weekly_rsi_threshold):
                 latest = stock_df.iloc[-1]
                 pct_change = ((latest['Close'] - latest['Open']) / latest['Open'] * 100) if latest['Open'] != 0 else 0
                 
-                # Calculate RSI for display (using full historical data)
+                # Calculate RSI for display
                 d_rsi = ta.RSI(stock_df['Close'], timeperiod=14).iloc[-1] if len(stock_df) > 14 else np.nan
                 weekly_data = stock_df.resample('W-MON').agg({'Close': 'last'}).dropna()
                 w_rsi = ta.RSI(weekly_data['Close'], timeperiod=14).iloc[-1] if len(weekly_data) > 14 else np.nan
