@@ -5,9 +5,10 @@ import yfinance as yf
 import requests
 import talib as ta
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Tuple, Dict
+import time  # Added for potential delays
 
 # --- Page Configuration ---
 st.set_page_config(
@@ -101,6 +102,23 @@ def download_all_data(tickers):
     )
     return data
 
+# NEW: Function to download current day data in batch
+@st.cache_data(ttl=300)  # Cache for 5 minutes to allow frequent updates
+def download_current_data(tickers):
+    """Downloads current day (partial) data for all tickers in one batch."""
+    try:
+        data = yf.download(
+            tickers,
+            period="1d",
+            group_by='ticker',
+            auto_adjust=True,
+            threads=False
+        )
+        return data
+    except Exception as e:
+        st.error(f"Error downloading current data: {e}")
+        return pd.DataFrame()  # Empty on failure
+
 # --- Core Filtering Logic ---
 def passes_filters(df, filters):
     """Check if a stock's DataFrame passes all active filters."""
@@ -145,7 +163,7 @@ def passes_filters(df, filters):
 
 # ------------------- Streamlit UI Layout ------------------- #
 
-# st.markdown('<div class="main-header"><h1>🇮🇳 NSE 10-Filter Stock Screener</h1></div>', unsafe_allow_html=True)
+st.markdown('<div class="main-header"><h1>🇮🇳 NSE 10-Filter Stock Screener</h1></div>', unsafe_allow_html=True)
 
 # --- Sidebar for Filter Selection ---
 st.sidebar.header("📊 Filter Conditions")
@@ -178,9 +196,20 @@ st.info(f"Ready to scan **{total_stocks_count}** stocks based on your selected f
 if st.button("🚀 Run Scan on All NSE Stocks"):
     start_time = datetime.now()
     
-    with st.spinner(f"Downloading data for {total_stocks_count} stocks... This may take a minute or two."):
+    with st.spinner(f"Downloading historical data for {total_stocks_count} stocks... This may take a minute or two."):
         tickers = [f"{symbol}.NS" for symbol in all_stocks.keys()]
         data = download_all_data(tickers)
+    
+    with st.spinner("Downloading current market data..."):
+        # NEW: Batch fetch current data
+        current_data = download_current_data(tickers)
+        # Optional: Retry logic for rate limit
+        retries = 3
+        while current_data.empty and retries > 0:
+            st.warning("Rate limit hit on current data download. Retrying after delay...")
+            time.sleep(60)  # Wait 1 minute
+            current_data = download_current_data(tickers)
+            retries -= 1
 
     results = []
     status_text = st.empty()
@@ -191,42 +220,42 @@ if st.button("🚀 Run Scan on All NSE Stocks"):
         progress_bar.progress((i + 1) / total_stocks_count)
         
         try:
-            stock_df = data[f"{symbol}.NS"].dropna(how='all').copy()
+            stock_df = data.get(f"{symbol}.NS", pd.DataFrame()).dropna(how='all').copy()
             
-            # Fetch and incorporate current market data
-            ticker = yf.Ticker(f"{symbol}.NS")
-            info = ticker.info
-            current_price = info.get('regularMarketPrice')
-            day_open = info.get('regularMarketOpen')
-            day_high = info.get('regularMarketDayHigh')
-            day_low = info.get('regularMarketDayLow')
-            volume = info.get('regularMarketVolume')
-            
-            if current_price and volume and volume > 0 and day_open and day_open > 0:
-                current_date = datetime.now().date()
-                if not stock_df.empty:
-                    last_date = stock_df.index[-1].date()
-                else:
-                    last_date = current_date - pd.Timedelta(days=1)
+            # NEW: Incorporate batched current market data
+            current_df = current_data.get(f"{symbol}.NS", pd.DataFrame())
+            if not current_df.empty:
+                latest_current = current_df.iloc[-1]
+                day_open = latest_current['Open']
+                day_high = latest_current['High']
+                day_low = latest_current['Low']
+                current_price = latest_current['Close']
+                volume = latest_current['Volume']
                 
-                if last_date == current_date:
-                    # Update existing today's row with latest values
-                    last_index = stock_df.index[-1]
-                    stock_df.at[last_index, 'Close'] = current_price
-                    stock_df.at[last_index, 'High'] = day_high
-                    stock_df.at[last_index, 'Low'] = day_low
-                    stock_df.at[last_index, 'Volume'] = volume
-                elif last_date < current_date:
-                    # Add new row for today
-                    new_index = pd.Timestamp(current_date)
-                    new_row = pd.DataFrame({
-                        'Open': [day_open],
-                        'High': [day_high],
-                        'Low': [day_low],
-                        'Close': [current_price],
-                        'Volume': [volume],
-                    }, index=[new_index])
-                    stock_df = pd.concat([stock_df, new_row])
+                if volume > 0 and day_open > 0:
+                    current_date = datetime.now().date()
+                    if not stock_df.empty:
+                        stock_df.index = pd.to_datetime(stock_df.index)
+                        last_date = stock_df.index[-1].date()
+                        if last_date == current_date:
+                            # Update existing today's row
+                            last_index = stock_df.index[-1]
+                            stock_df.at[last_index, 'Close'] = current_price
+                            # Update High/Low if current is more extreme (though yf provides aggregated)
+                            stock_df.at[last_index, 'High'] = max(stock_df.at[last_index, 'High'], day_high)
+                            stock_df.at[last_index, 'Low'] = min(stock_df.at[last_index, 'Low'], day_low)
+                            stock_df.at[last_index, 'Volume'] = volume
+                        elif last_date < current_date:
+                            # Add new row for today
+                            new_index = pd.Timestamp(current_date)
+                            new_row = pd.DataFrame({
+                                'Open': [day_open],
+                                'High': [day_high],
+                                'Low': [day_low],
+                                'Close': [current_price],
+                                'Volume': [volume],
+                            }, index=[new_index])
+                            stock_df = pd.concat([stock_df, new_row])
             
             if passes_filters(stock_df, active_filters):
                 latest = stock_df.iloc[-1]
