@@ -9,6 +9,10 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Tuple, Dict
 import time  # Added for potential delays
+import pytz  # Added for timezone handling
+
+# --- Timezone Configuration ---
+ist = pytz.timezone('Asia/Kolkata')
 
 # --- Page Configuration ---
 st.set_page_config(
@@ -91,14 +95,15 @@ def load_nse_stocks() -> Tuple[Dict, str]:
 @st.cache_data(ttl=1800) # Cache data for 30 minutes
 def download_all_data(tickers):
     """Downloads historical data for a list of tickers."""
-    today = datetime.now()
+    today = datetime.now(ist)
     start_date = today - pd.DateOffset(years=2)
     data = yf.download(
         tickers,
         start=start_date.strftime('%Y-%m-%d'),
         group_by='ticker',
         auto_adjust=True,
-        threads=False
+        threads=False,
+        ignore_tz=True  # Added for consistent timezone handling
     )
     return data
 
@@ -107,12 +112,17 @@ def download_all_data(tickers):
 def download_current_data(tickers):
     """Downloads current day (partial) data for all tickers in one batch."""
     try:
+        today = datetime.now(ist)
+        start_str = today.strftime('%Y-%m-%d')
+        end_str = (today + timedelta(days=1)).strftime('%Y-%m-%d')
         data = yf.download(
             tickers,
-            period="1d",
+            start=start_str,
+            end=end_str,
             group_by='ticker',
             auto_adjust=True,
-            threads=False
+            threads=False,
+            ignore_tz=True  # Added for consistent timezone handling
         )
         return data
     except Exception as e:
@@ -120,7 +130,7 @@ def download_current_data(tickers):
         return pd.DataFrame()  # Empty on failure
 
 # --- Core Filtering Logic ---
-def passes_filters(df, filters):
+def passes_filters(df, filters, rsi_above_threshold=45.0, rsi_crossed_threshold=59.0):
     """Check if a stock's DataFrame passes all active filters."""
     try:
         if df is None or df.empty or len(df) < 30: return False
@@ -146,15 +156,15 @@ def passes_filters(df, filters):
             monthly_open = df['Open'].resample('MS').first().iloc[-1]
             if pd.isna(monthly_open) or latest['Close'] <= monthly_open: return False
 
-        if filters.get("Weekly RSI > 45", False) or filters.get("RSI crossed 59", False):
+        if filters.get("Weekly RSI >", False) or filters.get("RSI crossed", False):
             weekly_data = df.resample('W-MON').agg({'Close': 'last'}).dropna()
             if len(weekly_data) < 15: return False
             w_rsi = ta.RSI(weekly_data['Close'], timeperiod=14)
             if w_rsi.dropna().shape[0] < 2: return False
             latest_rsi, prev_rsi = w_rsi.iloc[-1], w_rsi.iloc[-2]
             if pd.isna(latest_rsi) or pd.isna(prev_rsi): return False
-            if filters.get("Weekly RSI > 45", False) and latest_rsi <= 45: return False
-            if filters.get("RSI crossed 59", False) and not (prev_rsi < 59 and latest_rsi > 59): return False
+            if filters.get("Weekly RSI >", False) and latest_rsi <= rsi_above_threshold: return False
+            if filters.get("RSI crossed", False) and not (prev_rsi < rsi_crossed_threshold and latest_rsi > rsi_crossed_threshold): return False
         
         return True
     
@@ -181,8 +191,18 @@ with st.sidebar.expander("🗓️ Periodical Crossover Filters", expanded=True):
     
 with st.sidebar.expander("💹 Volume & RSI Filters", expanded=True):
     active_filters["Volume > 500k"] = st.checkbox("Daily Volume > 500,000", True)
-    active_filters["Weekly RSI > 45"] = st.checkbox("Weekly RSI(14) > 45", True)
-    active_filters["RSI crossed 59"] = st.checkbox("Weekly RSI Crossed Above 59", True)
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        active_filters["Weekly RSI >"] = st.checkbox("Weekly RSI(14) >", True)
+    with col2:
+        rsi_above_threshold = st.number_input("RSI > Threshold", min_value=0.0, max_value=100.0, value=45.0, step=0.1, label_visibility="collapsed")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        active_filters["RSI crossed"] = st.checkbox("Weekly RSI Crossed Above", True)
+    with col2:
+        rsi_crossed_threshold = st.number_input("Crossed Threshold", min_value=0.0, max_value=100.0, value=59.0, step=0.1, label_visibility="collapsed")
 
 st.sidebar.markdown("---")
 # --- Main Application Logic ---
@@ -194,7 +214,7 @@ total_stocks_count = len(all_stocks)
 st.info(f"Ready to scan **{total_stocks_count}** stocks based on your selected filters.")
 
 if st.button("🚀 Run Scan on All NSE Stocks"):
-    start_time = datetime.now()
+    start_time = datetime.now(ist)
     
     with st.spinner(f"Downloading historical data for {total_stocks_count} stocks... This may take a minute or two."):
         tickers = [f"{symbol}.NS" for symbol in all_stocks.keys()]
@@ -222,9 +242,20 @@ if st.button("🚀 Run Scan on All NSE Stocks"):
         try:
             stock_df = data.get(f"{symbol}.NS", pd.DataFrame()).dropna(how='all').copy()
             
+            # Handle timezone for historical data
+            if not stock_df.empty:
+                if stock_df.index.tz is None:
+                    stock_df.index = stock_df.index.tz_localize('UTC')
+                stock_df.index = stock_df.index.tz_convert('Asia/Kolkata')
+            
             # NEW: Incorporate batched current market data
             current_df = current_data.get(f"{symbol}.NS", pd.DataFrame())
             if not current_df.empty:
+                # Handle timezone for current data
+                if current_df.index.tz is None:
+                    current_df.index = current_df.index.tz_localize('UTC')
+                current_df.index = current_df.index.tz_convert('Asia/Kolkata')
+                
                 latest_current = current_df.iloc[-1]
                 day_open = latest_current['Open']
                 day_high = latest_current['High']
@@ -233,31 +264,29 @@ if st.button("🚀 Run Scan on All NSE Stocks"):
                 volume = latest_current['Volume']
                 
                 if volume > 0 and day_open > 0:
-                    current_date = datetime.now().date()
-                    if not stock_df.empty:
-                        stock_df.index = pd.to_datetime(stock_df.index)
-                        last_date = stock_df.index[-1].date()
-                        if last_date == current_date:
-                            # Update existing today's row
-                            last_index = stock_df.index[-1]
-                            stock_df.at[last_index, 'Close'] = current_price
-                            # Update High/Low if current is more extreme (though yf provides aggregated)
-                            stock_df.at[last_index, 'High'] = max(stock_df.at[last_index, 'High'], day_high)
-                            stock_df.at[last_index, 'Low'] = min(stock_df.at[last_index, 'Low'], day_low)
-                            stock_df.at[last_index, 'Volume'] = volume
-                        elif last_date < current_date:
-                            # Add new row for today
-                            new_index = pd.Timestamp(current_date)
-                            new_row = pd.DataFrame({
-                                'Open': [day_open],
-                                'High': [day_high],
-                                'Low': [day_low],
-                                'Close': [current_price],
-                                'Volume': [volume],
-                            }, index=[new_index])
-                            stock_df = pd.concat([stock_df, new_row])
+                    current_date = datetime.now(ist).date()
+                    last_date = stock_df.index[-1].date()
+                    if last_date == current_date:
+                        # Update existing today's row
+                        last_index = stock_df.index[-1]
+                        stock_df.at[last_index, 'Close'] = current_price
+                        # Update High/Low if current is more extreme (though yf provides aggregated)
+                        stock_df.at[last_index, 'High'] = max(stock_df.at[last_index, 'High'], day_high)
+                        stock_df.at[last_index, 'Low'] = min(stock_df.at[last_index, 'Low'], day_low)
+                        stock_df.at[last_index, 'Volume'] = volume
+                    elif last_date < current_date:
+                        # Add new row for today
+                        new_index = pd.Timestamp(current_date).tz_localize('Asia/Kolkata')
+                        new_row = pd.DataFrame({
+                            'Open': [day_open],
+                            'High': [day_high],
+                            'Low': [day_low],
+                            'Close': [current_price],
+                            'Volume': [volume],
+                        }, index=[new_index])
+                        stock_df = pd.concat([stock_df, new_row])
             
-            if passes_filters(stock_df, active_filters):
+            if passes_filters(stock_df, active_filters, rsi_above_threshold, rsi_crossed_threshold):
                 latest = stock_df.iloc[-1]
                 pct_change = ((latest['Close'] - latest['Open']) / latest['Open'] * 100) if latest['Open'] != 0 else 0
                 results.append({
@@ -270,7 +299,7 @@ if st.button("🚀 Run Scan on All NSE Stocks"):
         except KeyError:
             continue
     
-    end_time = datetime.now()
+    end_time = datetime.now(ist)
     scan_duration = end_time - start_time
     status_text.empty()
     progress_bar.empty()
