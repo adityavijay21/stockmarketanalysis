@@ -269,13 +269,11 @@ def download_all_data(tickers):
     """Download historical data in batches with retry logic"""
     try:
         start = datetime.now(ist) - pd.DateOffset(years=2)
-        batch_size = 50  # Reduced for stability
+        batch_size = 50
         all_data = {}
-        errors = []
-        
         for i in range(0, len(tickers), batch_size):
             batch_tickers = tickers[i:i + batch_size]
-            for attempt in range(3):  # Retry up to 3 times
+            for attempt in range(3):
                 try:
                     data = yf.download(
                         batch_tickers,
@@ -290,20 +288,11 @@ def download_all_data(tickers):
                         for ticker in batch_tickers:
                             if ticker in data.columns.levels[0]:
                                 all_data[ticker] = data[ticker]
-                    else:
-                        errors.append(f"Empty data for batch {i//batch_size + 1}, attempt {attempt + 1}")
-                    break  # Success, exit retry loop
+                    break
                 except Exception as e:
-                    errors.append(f"Batch {i//batch_size + 1}, attempt {attempt + 1}: {str(e)}")
                     if attempt < 2:
-                        time.sleep(2)  # Wait before retry
-                    else:
-                        errors.append(f"Failed batch {i//batch_size + 1} after 3 attempts")
-            time.sleep(1)  # Delay between batches
-        
-        if errors:
-            st.warning(f"⚠️ {len(errors)} errors during historical data download: {', '.join(errors[:3])}")
-        
+                        time.sleep(2)
+            time.sleep(1)
         return all_data if all_data else {}
     except Exception as e:
         st.error(f"Error downloading historical data: {str(e)}")
@@ -316,8 +305,6 @@ def download_current_data(tickers):
         today = datetime.now(ist)
         batch_size = 50
         all_data = {}
-        errors = []
-        
         for i in range(0, len(tickers), batch_size):
             batch_tickers = tickers[i:i + batch_size]
             for attempt in range(3):
@@ -336,108 +323,83 @@ def download_current_data(tickers):
                         for ticker in batch_tickers:
                             if ticker in data.columns.levels[0]:
                                 all_data[ticker] = data[ticker]
-                    else:
-                        errors.append(f"Empty data for batch {i//batch_size + 1}, attempt {attempt + 1}")
                     break
                 except Exception as e:
-                    errors.append(f"Batch {i//batch_size + 1}, attempt {attempt + 1}: {str(e)}")
                     if attempt < 2:
                         time.sleep(2)
-                    else:
-                        errors.append(f"Failed batch {i//batch_size + 1} after 3 attempts")
             time.sleep(1)
-        
-        if errors:
-            st.warning(f"⚠️ {len(errors)} errors during current data download: {', '.join(errors[:3])}")
-        
         return all_data if all_data else {}
     except Exception as e:
         st.error(f"Error downloading current data: {str(e)}")
         return {}
 
-def passes_filters(df, filters, volume_threshold, rsi_d, rsi_d_cross, rsi_w, rsi_w_cross, rsi_d_cross_below, rsi_w_cross_below, debug_mode=False):
-    """Enhanced filter logic with debug logging and improved weekly RSI handling"""
+def passes_filters(df, filters, volume_threshold, rsi_d, rsi_d_cross_up, rsi_w, rsi_w_cross_up, rsi_d_cross_down, rsi_w_cross_down):
+    """Enhanced filter logic with improved weekly handling"""
     try:
         if df is None or df.empty or len(df) < 30:
-            return False, "Insufficient data (less than 30 days)"
+            return False, "Insufficient data"
         
         df = df.copy()
         latest = df.iloc[-1]
         
         # Volume filter
         if filters.get("Volume Filter") and latest["Volume"] < volume_threshold:
-            return False, f"Volume ({latest['Volume']}) below threshold ({volume_threshold})"
+            return False, "Volume below threshold"
         
         # Range filters
         if len(df) >= 5:
             df["Range"] = df["High"] - df["Low"]
             for i in range(1, 5):
                 if filters.get(f"Range > {i}d") and df["Range"].iloc[-1] <= df["Range"].iloc[-(i+1)]:
-                    return False, f"Range not greater than {i} day(s) ago"
+                    return False, f"Range not > {i} day ago"
         
         # Weekly and Monthly open filters
         if filters.get("Close > Weekly Open"):
-            weekly_data = df.resample("W-MON").agg({
-                "Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"
-            }).dropna()
+            weekly_data = df.resample("W-MON").agg({"Open": "first"}).dropna()
             if weekly_data.empty or latest["Close"] <= weekly_data["Open"].iloc[-1]:
-                return False, "Close not above weekly open"
+                return False, "Close not > weekly open"
         
         if filters.get("Close > Monthly Open"):
-            monthly_data = df.resample("MS").agg({
-                "Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"
-            }).dropna()
+            monthly_data = df.resample("MS").agg({"Open": "first"}).dropna()
             if monthly_data.empty or latest["Close"] <= monthly_data["Open"].iloc[-1]:
-                return False, "Close not above monthly open"
+                return False, "Close not > monthly open"
         
         # Daily RSI filters
-        if any([filters.get("Daily RSI >"), filters.get("Daily RSI crossed above"), filters.get("Daily RSI crossed below")]):
+        daily_rsi_filters = [filters.get("Daily RSI >"), filters.get("Daily RSI crossed above"), filters.get("Daily RSI crossed below")]
+        if any(daily_rsi_filters):
             rsi_daily = ta.RSI(df["Close"], 14).dropna()
             if rsi_daily.empty:
-                return False, "Empty daily RSI data"
-            
-            if debug_mode:
-                st.write(f"Daily RSI: Current={rsi_daily.iloc[-1]:.2f}, Previous={rsi_daily.iloc[-2]:.2f if len(rsi_daily) >= 2 else 'N/A'}")
-            
+                return False, "Empty daily RSI"
             if filters.get("Daily RSI >") and rsi_daily.iloc[-1] <= rsi_d:
-                return False, f"Daily RSI ({rsi_daily.iloc[-1]:.2f}) <= threshold ({rsi_d})"
-            
+                return False, "Daily RSI <= threshold"
             if filters.get("Daily RSI crossed above"):
-                if len(rsi_daily) < 2 or not (rsi_daily.iloc[-2] < rsi_d_cross < rsi_daily.iloc[-1]):
-                    return False, f"Daily RSI did not cross above {rsi_d_cross}"
-            
+                if len(rsi_daily) < 2 or not (rsi_daily.iloc[-2] < rsi_d_cross_up < rsi_daily.iloc[-1]):
+                    return False, "Daily RSI no cross above"
             if filters.get("Daily RSI crossed below"):
-                if len(rsi_daily) < 2 or not (rsi_daily.iloc[-2] > rsi_d_cross_below > rsi_daily.iloc[-1]):
-                    return False, f"Daily RSI did not cross below {rsi_d_cross_below}"
+                if len(rsi_daily) < 2 or not (rsi_daily.iloc[-2] > rsi_d_cross_down > rsi_daily.iloc[-1]):
+                    return False, "Daily RSI no cross below"
         
-        # Weekly RSI filters - Improved to handle incomplete weeks by using last available close
+        # Weekly RSI filters
         weekly_close = df.resample("W-MON")["Close"].last().dropna()
-        if any([filters.get("Weekly RSI >"), filters.get("Weekly RSI crossed above"), filters.get("Weekly RSI crossed below")]):
-            if len(weekly_close) < 15:  # Need at least 15 for RSI 14 + previous
-                return False, f"Insufficient weekly data ({len(weekly_close)} weeks, need 15)"
-            
+        weekly_rsi_filters = [filters.get("Weekly RSI >"), filters.get("Weekly RSI crossed above"), filters.get("Weekly RSI crossed below")]
+        if any(weekly_rsi_filters):
+            if len(weekly_close) < 14:
+                return False, "Insufficient weekly data for RSI"
             rsi_weekly = ta.RSI(weekly_close, 14).dropna()
-            if len(rsi_weekly) < 2:
-                return False, "Insufficient weekly RSI data for comparison"
-            
-            if debug_mode:
-                st.write(f"Weekly RSI: Current={rsi_weekly.iloc[-1]:.2f}, Previous={rsi_weekly.iloc[-2]:.2f}")
-            
+            if rsi_weekly.empty:
+                return False, "Empty weekly RSI"
             if filters.get("Weekly RSI >") and rsi_weekly.iloc[-1] <= rsi_w:
-                return False, f"Weekly RSI ({rsi_weekly.iloc[-1]:.2f}) <= threshold ({rsi_w})"
-            
+                return False, "Weekly RSI <= threshold"
             if filters.get("Weekly RSI crossed above"):
-                if not (rsi_weekly.iloc[-2] < rsi_w_cross < rsi_weekly.iloc[-1]):
-                    return False, f"Weekly RSI did not cross above {rsi_w_cross}"
-            
+                if len(rsi_weekly) < 2 or not (rsi_weekly.iloc[-2] < rsi_w_cross_up < rsi_weekly.iloc[-1]):
+                    return False, "Weekly RSI no cross above"
             if filters.get("Weekly RSI crossed below"):
-                if not (rsi_weekly.iloc[-2] > rsi_w_cross_below > rsi_weekly.iloc[-1]):
-                    return False, f"Weekly RSI did not cross below {rsi_w_cross_below} (Previous: {rsi_weekly.iloc[-2]:.2f}, Current: {rsi_weekly.iloc[-1]:.2f})"
+                if len(rsi_weekly) < 2 or not (rsi_weekly.iloc[-2] > rsi_w_cross_down > rsi_weekly.iloc[-1]):
+                    return False, "Weekly RSI no cross below"
         
-        return True, "Passed all filters"
-        
+        return True, "Passed"
     except Exception as e:
-        return False, f"Exception in filters: {str(e)}"
+        return False, f"Exception: {str(e)}"
 
 # -------------------------------------------------------
 # Sidebar Filters
@@ -446,16 +408,15 @@ st.sidebar.markdown('<div class="sidebar-header">🎯 Filters</div>', unsafe_all
 
 filters = {}
 
-with st.sidebar.expander("📊 Range Filters", expanded=False):
+with st.sidebar.expander("📊 Range Filters", expanded=True):
     for i in range(1, 5):
-        filters[f"Range > {i}d"] = st.checkbox(f"Range > {i} Day(s) Ago", False)
+        filters[f"Range > {i}d"] = st.checkbox(f"Range > {i} Day(s) Ago", True)
 
-with st.sidebar.expander("🗓️ Timeframe Breakouts", expanded=False):
-    filters["Close > Weekly Open"] = st.checkbox("Close > Weekly Open", False)
-    filters["Close > Monthly Open"] = st.checkbox("Close > Monthly Open", False)
+with st.sidebar.expander("🗓️ Timeframe Breakouts", expanded=True):
+    filters["Close > Weekly Open"] = st.checkbox("Close > Weekly Open", True)
+    filters["Close > Monthly Open"] = st.checkbox("Close > Monthly Open", True)
 
 with st.sidebar.expander("💹 Volume & RSI Filters", expanded=True):
-    # Volume Filter
     filters["Volume Filter"] = st.checkbox("Enable Volume Filter", True)
     volume_threshold = st.number_input(
         "Volume Threshold",
@@ -463,58 +424,52 @@ with st.sidebar.expander("💹 Volume & RSI Filters", expanded=True):
         max_value=50000000,
         value=500000,
         step=50000,
-        format="%d",
-        help="Minimum volume required for stock selection"
+        format="%d"
     )
     
-    # Daily RSI Filters
     st.markdown("**Daily RSI Filters**")
     col1, col2 = st.columns(2)
     with col1:
-        filters["Daily RSI >"] = st.checkbox("RSI >", False)
-        filters["Daily RSI crossed above"] = st.checkbox("Crossed Above", False)
-        filters["Daily RSI crossed below"] = st.checkbox("Crossed Below", False)
+        filters["Daily RSI >"] = st.checkbox("Daily RSI >", True)
+        filters["Daily RSI crossed above"] = st.checkbox("Daily Crossed Above", True)
+        filters["Daily RSI crossed below"] = st.checkbox("Daily Crossed Below", False)
     with col2:
-        rsi_d = st.number_input("", 0.0, 100.0, 50.0, 0.1, key="rsi_d_thresh", label_visibility="collapsed")
-        rsi_d_cross = st.number_input("", 0.0, 100.0, 50.0, 0.1, key="rsi_d_cross_up", label_visibility="collapsed")
-        rsi_d_cross_below = st.number_input("", 0.0, 100.0, 70.0, 0.1, key="rsi_d_cross_down", label_visibility="collapsed")
+        rsi_d = st.number_input("Threshold", 0.0, 100.0, 50.0, 0.1, key="rsi_d")
+        rsi_d_cross_up = st.number_input("Cross Above", 0.0, 100.0, 50.0, 0.1, key="rsi_d_up")
+        rsi_d_cross_down = st.number_input("Cross Below", 0.0, 100.0, 70.0, 0.1, key="rsi_d_down")
     
-    # Weekly RSI Filters
     st.markdown("**Weekly RSI Filters**")
     col1, col2 = st.columns(2)
     with col1:
-        filters["Weekly RSI >"] = st.checkbox("RSI >", False)
-        filters["Weekly RSI crossed above"] = st.checkbox("Crossed Above", False)
-        filters["Weekly RSI crossed below"] = st.checkbox("Crossed Below", False)
+        filters["Weekly RSI >"] = st.checkbox("Weekly RSI >", True)
+        filters["Weekly RSI crossed above"] = st.checkbox("Weekly Crossed Above", True)
+        filters["Weekly RSI crossed below"] = st.checkbox("Weekly Crossed Below", False)
     with col2:
-        rsi_w = st.number_input("", 0.0, 100.0, 45.0, 0.1, key="rsi_w_thresh", label_visibility="collapsed")
-        rsi_w_cross = st.number_input("", 0.0, 100.0, 59.0, 0.1, key="rsi_w_cross_up", label_visibility="collapsed")
-        rsi_w_cross_below = st.number_input("", 0.0, 100.0, 70.0, 0.1, key="rsi_w_cross_down", label_visibility="collapsed")
-
-# Debug Mode Toggle
-debug_mode = st.sidebar.checkbox("Debug Mode", False)
+        rsi_w = st.number_input("Threshold", 0.0, 100.0, 45.0, 0.1, key="rsi_w")
+        rsi_w_cross_up = st.number_input("Cross Above", 0.0, 100.0, 59.0, 0.1, key="rsi_w_up")
+        rsi_w_cross_down = st.number_input("Cross Below", 0.0, 100.0, 70.0, 0.1, key="rsi_w_down")
 
 # Filter Summary
 active_filters = sum(filters.values())
 if active_filters > 0:
-    st.sidebar.success(f"✅ {active_filters} active")
+    st.sidebar.success(f"✅ {active_filters} filters active")
 else:
-    st.sidebar.warning("⚠️ No filters")
+    st.sidebar.warning("⚠️ No filters selected")
 
 # -------------------------------------------------------
 # Dashboard KPIs
 # -------------------------------------------------------
-with st.spinner("Loading stocks..."):
+with st.spinner("Loading NSE stock data..."):
     stocks, status_message = load_nse_stocks()
 
 st.info(status_message)
 
-col1, col2, col3 = st.columns(3)
+col1, col2, col3, col4 = st.columns(4)
 
 with col1:
     st.markdown(f'''
     <div class="metric-card">
-        <h3>Stocks</h3>
+        <h3>Total Stocks</h3>
         <p>{len(stocks):,}</p>
     </div>
     ''', unsafe_allow_html=True)
@@ -522,33 +477,43 @@ with col1:
 with col2:
     st.markdown(f'''
     <div class="metric-card">
-        <h3>Filters</h3>
+        <h3>Active Filters</h3>
         <p>{active_filters}</p>
     </div>
     ''', unsafe_allow_html=True)
 
 with col3:
+    st.markdown(f'''
+    <div class="metric-card">
+        <h3>Volume Threshold</h3>
+        <p>{volume_threshold//1000}K</p>
+    </div>
+    ''', unsafe_allow_html=True)
+
+with col4:
     current_time = datetime.now(ist)
     market_status = "🟢 Open" if 9 <= current_time.hour < 15 and current_time.weekday() < 5 else "🔴 Closed"
     st.markdown(f'''
     <div class="metric-card">
-        <h3>Market</h3>
+        <h3>Market Status</h3>
         <p>{market_status}</p>
     </div>
     ''', unsafe_allow_html=True)
 
+st.markdown("---")
+
 # -------------------------------------------------------
 # Scan Logic
 # -------------------------------------------------------
-if st.button("🚀 Scan", use_container_width=True):
+if st.button("🚀 Run Scan", use_container_width=True):
     if active_filters == 0:
-        st.warning("⚠️ Select filters!")
+        st.warning("⚠️ Please select at least one filter!")
         st.stop()
     
     start_time = datetime.now(ist)
     tickers = [f"{symbol}.NS" for symbol in stocks.keys()]
     
-    # Live results
+    # Live results placeholder
     live_results_placeholder = st.empty()
     live_results = []
     
@@ -556,17 +521,14 @@ if st.button("🚀 Scan", use_container_width=True):
         hist_data = download_all_data(tickers)
     
     if not hist_data:
-        st.error("❌ Historical data failed.")
+        st.error("❌ Failed to download historical data.")
         st.stop()
     
     with st.spinner("Fetching current data..."):
         current_data = download_current_data(tickers)
     
-    # Scanning
     results = []
     progress_bar = st.progress(0)
-    processed = 0
-    errors = []
     
     for i, (symbol, company_name) in enumerate(stocks.items()):
         progress_bar.progress((i + 1) / len(stocks))
@@ -576,16 +538,12 @@ if st.button("🚀 Scan", use_container_width=True):
             stock_df = hist_data.get(ticker_symbol, pd.DataFrame()).dropna(how="all")
             
             if stock_df.empty:
-                if debug_mode:
-                    errors.append(f"{symbol}: Empty historical data")
                 continue
             
-            # Timezone handling
             if stock_df.index.tz is None:
                 stock_df.index = stock_df.index.tz_localize("UTC")
             stock_df.index = stock_df.index.tz_convert("Asia/Kolkata")
             
-            # Merge current
             current_stock = current_data.get(ticker_symbol, pd.DataFrame())
             if not current_stock.empty:
                 try:
@@ -608,20 +566,14 @@ if st.button("🚀 Scan", use_container_width=True):
                         stock_df.iloc[-1] = new_row.iloc[0]
                     else:
                         stock_df = pd.concat([stock_df, new_row])
-                except Exception as e:
-                    if debug_mode:
-                        errors.append(f"{symbol}: Merge error - {str(e)}")
+                except Exception:
+                    pass
             
-            # Filters
             passed, reason = passes_filters(
                 stock_df, filters, volume_threshold, 
-                rsi_d, rsi_d_cross, rsi_w, rsi_w_cross, 
-                rsi_d_cross_below, rsi_w_cross_below,
-                debug_mode=debug_mode
+                rsi_d, rsi_d_cross_up, rsi_w, rsi_w_cross_up, 
+                rsi_d_cross_down, rsi_w_cross_down
             )
-            
-            if debug_mode:
-                st.write(f"{symbol}: {reason}")
             
             if passed:
                 latest_data = stock_df.iloc[-1]
@@ -633,7 +585,7 @@ if st.button("🚀 Scan", use_container_width=True):
                 stock_data = {
                     "Symbol": symbol,
                     "Name": company_name,
-                    "Close": f"₹{latest_data['Close']:.2f}",
+                    "Close Price": f"₹{latest_data['Close']:.2f}",
                     "% Change": f"{price_change:+.2f}%",
                     "Volume": f"{int(latest_data['Volume']):,}",
                     "Daily RSI": f"{daily_rsi:.2f}" if pd.notna(daily_rsi) else "N/A",
@@ -643,38 +595,39 @@ if st.button("🚀 Scan", use_container_width=True):
                 results.append(stock_data)
                 live_results.append(stock_data)
                 
-                # Update live every stock for real-time feel
                 live_results_df = pd.DataFrame(live_results)
                 live_results_placeholder.dataframe(
                     live_results_df,
                     use_container_width=True,
-                    hide_index=True
+                    hide_index=True,
+                    column_config={
+                        "Symbol": st.column_config.TextColumn("Symbol", width="small"),
+                        "Name": st.column_config.TextColumn("Company Name", width="medium"),
+                        "Close Price": st.column_config.TextColumn("Close Price", width="small"),
+                        "% Change": st.column_config.TextColumn("% Change", width="small"),
+                        "Volume": st.column_config.TextColumn("Volume", width="small"),
+                        "Daily RSI": st.column_config.TextColumn("Daily RSI", width="small"),
+                        "Weekly RSI": st.column_config.TextColumn("Weekly RSI", width="small"),
+                    }
                 )
             
-            elif debug_mode:
-                errors.append(f"{symbol}: {reason}")
-        
-        except Exception as e:
-            if debug_mode:
-                errors.append(f"{symbol}: {str(e)}")
+        except Exception:
             continue
-        
-        processed += 1
     
-    # Results
     progress_bar.empty()
     end_time = datetime.now(ist)
     duration = str(end_time - start_time).split('.')[0]
+    st.markdown('<p class="results-header">Scan Results</p>', unsafe_allow_html=True)
     
     if results:
-        st.success(f"✅ {len(results)} stocks found. Duration: {duration}")
+        st.success(f"✅ {len(results)} stocks matched. Duration: {duration}")
         df_out = pd.DataFrame(results)
-        df_out["Time"] = end_time.strftime("%Y-%m-%d %H:%M")
+        df_out["Scan Time"] = end_time.strftime("%Y-%m-%d %H:%M")
         
         import io
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            df_out.to_excel(writer, index=False, sheet_name='Scan Results')
+            df_out.to_excel(writer, index=False, sheet_name='Results')
         output.seek(0)
         
         st.download_button(
@@ -684,9 +637,4 @@ if st.button("🚀 Scan", use_container_width=True):
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
     else:
-        st.warning(f"⚠️ No stocks. Duration: {duration}")
-    
-    if debug_mode and errors:
-        with st.expander("Error Log"):
-            for error in errors[:50]:
-                st.write(error)
+        st.warning(f"⚠️ No stocks matched. Duration: {duration}")
