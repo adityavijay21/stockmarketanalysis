@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Tuple, Dict
 
 # -------------------------------------------------------
-# Timezone & Page Config
+# Timezone aur Page Config set kar rahe hain
 # -------------------------------------------------------
 ist = pytz.timezone("Asia/Kolkata")
 st.set_page_config(
@@ -27,7 +27,7 @@ st.set_page_config(
 )
 
 # -------------------------------------------------------
-# Minimal Theme & Styles
+# Minimal Theme aur Styles apply kar rahe hain
 # -------------------------------------------------------
 def apply_custom_css():
     st.markdown("""
@@ -217,7 +217,7 @@ def apply_custom_css():
 apply_custom_css()
 
 # -------------------------------------------------------
-# Header
+# Header display kar rahe hain
 # -------------------------------------------------------
 st.markdown('''
 <div class="main-header">
@@ -226,11 +226,11 @@ st.markdown('''
 ''', unsafe_allow_html=True)
 
 # -------------------------------------------------------
-# Data Utilities
+# Data Utilities - Stocks load aur download functions
 # -------------------------------------------------------
 @st.cache_data(ttl=43200, show_spinner=False)
 def load_nse_stocks() -> Tuple[Dict, str]:
-    """Load NSE stock list with enhanced error handling"""
+    """Ye function NSE stock list load karta hai with enhanced error handling"""
     try:
         url = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
         df = pd.read_csv(url, timeout=30)
@@ -238,7 +238,7 @@ def load_nse_stocks() -> Tuple[Dict, str]:
         df = df.sort_values("SYMBOL")
         return dict(zip(df["SYMBOL"], df["NAME OF COMPANY"])), f"✅ Loaded {len(df):,} NSE stocks successfully"
     except Exception as e:
-        # Fallback to local file
+        # Fallback to local file agar online fail ho jaye
         p = Path("indian_stocks.json")
         if p.exists():
             try:
@@ -249,7 +249,7 @@ def load_nse_stocks() -> Tuple[Dict, str]:
             except Exception:
                 pass
         
-        # Ultimate fallback
+        # Ultimate fallback agar sab fail ho
         fallback_stocks = {
             "RELIANCE": "Reliance Industries Limited",
             "TCS": "Tata Consultancy Services Limited",
@@ -266,14 +266,14 @@ def load_nse_stocks() -> Tuple[Dict, str]:
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def download_all_data(tickers):
-    """Download historical data in batches with retry logic"""
+    """Ye function historical data download karta hai in batches with retry logic for optimization"""
     try:
         start = datetime.now(ist) - pd.DateOffset(years=2)
-        batch_size = 50
+        batch_size = 50  # Batches mein download karke optimize kar rahe hain
         all_data = {}
         for i in range(0, len(tickers), batch_size):
             batch_tickers = tickers[i:i + batch_size]
-            for attempt in range(3):
+            for attempt in range(3):  # Retry agar fail ho
                 try:
                     data = yf.download(
                         batch_tickers,
@@ -291,8 +291,8 @@ def download_all_data(tickers):
                     break
                 except Exception as e:
                     if attempt < 2:
-                        time.sleep(2)
-            time.sleep(1)
+                        time.sleep(2)  # Thoda wait karke retry
+            time.sleep(1)  # API rate limit avoid karne ke liye
         return all_data if all_data else {}
     except Exception as e:
         st.error(f"Error downloading historical data: {str(e)}")
@@ -300,7 +300,7 @@ def download_all_data(tickers):
 
 @st.cache_data(ttl=300, show_spinner=False)
 def download_current_data(tickers):
-    """Download current market data in batches with retry logic"""
+    """Ye function current market data download karta hai in batches with retry"""
     try:
         today = datetime.now(ist)
         batch_size = 50
@@ -334,7 +334,7 @@ def download_current_data(tickers):
         return {}
 
 def passes_filters(df, filters, volume_threshold, rsi_d, rsi_d_cross_up, rsi_w, rsi_w_cross_up, rsi_d_cross_down, rsi_w_cross_down):
-    """Enhanced filter logic with improved weekly handling"""
+    """Ye function check karta hai ki stock sab filters pass karta hai ya nahi, with optimized logic"""
     try:
         if df is None or df.empty or len(df) < 30:
             return False, "Insufficient data"
@@ -342,18 +342,22 @@ def passes_filters(df, filters, volume_threshold, rsi_d, rsi_d_cross_up, rsi_w, 
         df = df.copy()
         latest = df.iloc[-1]
         
-        # Volume filter
+        # Missed filter add kiya: Close > Open check
+        if filters.get("Close > Open") and latest["Close"] <= latest["Open"]:
+            return False, "Close not > Open"
+        
+        # Volume filter check
         if filters.get("Volume Filter") and latest["Volume"] < volume_threshold:
             return False, "Volume below threshold"
         
-        # Range filters
+        # Range filters check kar rahe hain
         if len(df) >= 5:
             df["Range"] = df["High"] - df["Low"]
             for i in range(1, 5):
                 if filters.get(f"Range > {i}d") and df["Range"].iloc[-1] <= df["Range"].iloc[-(i+1)]:
                     return False, f"Range not > {i} day ago"
         
-        # Weekly and Monthly open filters
+        # Weekly aur Monthly open filters
         if filters.get("Close > Weekly Open"):
             weekly_data = df.resample("W-MON").agg({"Open": "first"}).dropna()
             if weekly_data.empty or latest["Close"] <= weekly_data["Open"].iloc[-1]:
@@ -364,7 +368,7 @@ def passes_filters(df, filters, volume_threshold, rsi_d, rsi_d_cross_up, rsi_w, 
             if monthly_data.empty or latest["Close"] <= monthly_data["Open"].iloc[-1]:
                 return False, "Close not > monthly open"
         
-        # Daily RSI filters
+        # Daily RSI filters check
         daily_rsi_filters = [filters.get("Daily RSI >"), filters.get("Daily RSI crossed above"), filters.get("Daily RSI crossed below")]
         if any(daily_rsi_filters):
             rsi_daily = ta.RSI(df["Close"], 14).dropna()
@@ -379,7 +383,7 @@ def passes_filters(df, filters, volume_threshold, rsi_d, rsi_d_cross_up, rsi_w, 
                 if len(rsi_daily) < 2 or not (rsi_daily.iloc[-2] > rsi_d_cross_down > rsi_daily.iloc[-1]):
                     return False, "Daily RSI no cross below"
         
-        # Weekly RSI filters
+        # Weekly RSI filters check
         weekly_close = df.resample("W-MON")["Close"].last().dropna()
         weekly_rsi_filters = [filters.get("Weekly RSI >"), filters.get("Weekly RSI crossed above"), filters.get("Weekly RSI crossed below")]
         if any(weekly_rsi_filters):
@@ -402,13 +406,15 @@ def passes_filters(df, filters, volume_threshold, rsi_d, rsi_d_cross_up, rsi_w, 
         return False, f"Exception: {str(e)}"
 
 # -------------------------------------------------------
-# Sidebar Filters
+# Sidebar mein Filters set kar rahe hain
 # -------------------------------------------------------
 st.sidebar.markdown('<div class="sidebar-header">🎯 Filters</div>', unsafe_allow_html=True)
 
 filters = {}
 
 with st.sidebar.expander("📊 Range Filters", expanded=True):
+    # Missed filter yahan add kiya: Close > Open
+    filters["Close > Open"] = st.checkbox("Close > Open", True)
     for i in range(1, 5):
         filters[f"Range > {i}d"] = st.checkbox(f"Range > {i} Day(s) Ago", True)
 
@@ -449,7 +455,7 @@ with st.sidebar.expander("💹 Volume & RSI Filters", expanded=True):
         rsi_w_cross_up = st.number_input("Cross Above", 0.0, 100.0, 59.0, 0.1, key="rsi_w_up")
         rsi_w_cross_down = st.number_input("Cross Below", 0.0, 100.0, 70.0, 0.1, key="rsi_w_down")
 
-# Filter Summary
+# Filter Summary show kar rahe hain sidebar mein
 active_filters = sum(filters.values())
 if active_filters > 0:
     st.sidebar.success(f"✅ {active_filters} filters active")
@@ -457,7 +463,7 @@ else:
     st.sidebar.warning("⚠️ No filters selected")
 
 # -------------------------------------------------------
-# Dashboard KPIs
+# Dashboard KPIs display
 # -------------------------------------------------------
 with st.spinner("Loading NSE stock data..."):
     stocks, status_message = load_nse_stocks()
@@ -503,7 +509,7 @@ with col4:
 st.markdown("---")
 
 # -------------------------------------------------------
-# Scan Logic
+# Scan Logic - Button press par scan chala rahe hain
 # -------------------------------------------------------
 if st.button("🚀 Run Scan", use_container_width=True):
     if active_filters == 0:
@@ -513,7 +519,7 @@ if st.button("🚀 Run Scan", use_container_width=True):
     start_time = datetime.now(ist)
     tickers = [f"{symbol}.NS" for symbol in stocks.keys()]
     
-    # Live results placeholder
+    # Live results ke liye placeholder
     live_results_placeholder = st.empty()
     live_results = []
     
